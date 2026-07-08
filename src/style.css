@@ -1,0 +1,76 @@
+html {
+  overflow-y: auto;
+}
+
+body {
+  margin: 0;
+  background: #f6f8fa;
+  color: #1f2933;
+  font-family:
+    Inter, 'Noto Sans JP', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    sans-serif;
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.content-wrap {
+  width: min(1180px, calc(100vw - 32px));
+  margin: 0 auto;
+}
+
+.toolbar-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.summary-tile {
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.summary-label {
+  color: #697586;
+  font-size: 0.78rem;
+}
+
+.summary-value {
+  margin-top: 2px;
+  color: #102a43;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.issue-complete {
+  opacity: 0.58;
+}
+
+.issue-overdue td {
+  background: #fff7ed;
+}
+
+@media (max-width: 760px) {
+  .content-wrap {
+    width: min(100vw - 20px, 1180px);
+  }
+
+  .toolbar-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
