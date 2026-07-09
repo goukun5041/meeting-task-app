@@ -87,7 +87,7 @@ const headers = [
   { title: 'ステータス', key: 'status', width: 150 },
   { title: '優先度', key: 'priority', width: 120 },
   { title: '期限', key: 'dueDate', width: 140 },
-  { title: '操作', key: 'actions', width: 150, align: 'end', sortable: false },
+  { title: '操作', key: 'actions', width: 150, align: 'end' as const, sortable: false },
 ]
 
 function shortId(id: string): string {
