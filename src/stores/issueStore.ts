@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
 import { PRIORITY_WEIGHT } from '../constants/issueOptions'
-import type { Issue, IssueFormInput } from '../types/issue'
+import type { Issue, IssueFormInput, IssueHistory, IssueHistoryInput } from '../types/issue'
 import { loadIssues, saveIssues } from '../utils/storage'
 
 const now = new Date()
@@ -18,6 +18,7 @@ const sampleIssues: Issue[] = [
     status: '対応中',
     priority: '高',
     dueDate: nextWeek.toISOString().slice(0, 10),
+    histories: [],
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   },
@@ -28,6 +29,7 @@ const sampleIssues: Issue[] = [
     status: '未着手',
     priority: '中',
     dueDate: today,
+    histories: [],
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   },
@@ -38,17 +40,26 @@ const sampleIssues: Issue[] = [
     status: '完了',
     priority: '低',
     dueDate: null,
+    histories: [],
     createdAt: now.toISOString(),
     updatedAt: now.toISOString(),
   },
 ]
 
 function createIssueId(): string {
+  return createPrefixedId('issue')
+}
+
+function createHistoryId(): string {
+  return createPrefixedId('history')
+}
+
+function createPrefixedId(prefix: string): string {
   if (globalThis.crypto?.randomUUID) {
-    return `issue-${globalThis.crypto.randomUUID()}`
+    return `${prefix}-${globalThis.crypto.randomUUID()}`
   }
 
-  return `issue-${Date.now()}`
+  return `${prefix}-${Date.now()}`
 }
 
 export const useIssueStore = defineStore('issues', () => {
@@ -88,6 +99,7 @@ export const useIssueStore = defineStore('issues', () => {
     const issue: Issue = {
       ...input,
       id: createIssueId(),
+      histories: [],
       createdAt: timestamp,
       updatedAt: timestamp,
     }
@@ -116,6 +128,67 @@ export const useIssueStore = defineStore('issues', () => {
     persist()
   }
 
+  function addIssueHistory(issueId: string, input: IssueHistoryInput): void {
+    const timestamp = new Date().toISOString()
+    const history: IssueHistory = {
+      ...input,
+      id: createHistoryId(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    }
+
+    issues.value = issues.value.map((issue) =>
+      issue.id === issueId
+        ? {
+            ...issue,
+            histories: [...issue.histories, history],
+            updatedAt: timestamp,
+          }
+        : issue,
+    )
+    persist()
+  }
+
+  function updateIssueHistory(
+    issueId: string,
+    historyId: string,
+    input: IssueHistoryInput,
+  ): void {
+    const timestamp = new Date().toISOString()
+    issues.value = issues.value.map((issue) =>
+      issue.id === issueId
+        ? {
+            ...issue,
+            histories: issue.histories.map((history) =>
+              history.id === historyId
+                ? {
+                    ...history,
+                    ...input,
+                    updatedAt: timestamp,
+                  }
+                : history,
+            ),
+            updatedAt: timestamp,
+          }
+        : issue,
+    )
+    persist()
+  }
+
+  function deleteIssueHistory(issueId: string, historyId: string): void {
+    const timestamp = new Date().toISOString()
+    issues.value = issues.value.map((issue) =>
+      issue.id === issueId
+        ? {
+            ...issue,
+            histories: issue.histories.filter((history) => history.id !== historyId),
+            updatedAt: timestamp,
+          }
+        : issue,
+    )
+    persist()
+  }
+
   function getIssueById(id: string): Issue | undefined {
     return issues.value.find((issue) => issue.id === id)
   }
@@ -128,6 +201,9 @@ export const useIssueStore = defineStore('issues', () => {
     createIssue,
     updateIssue,
     deleteIssue,
+    addIssueHistory,
+    updateIssueHistory,
+    deleteIssueHistory,
     getIssueById,
   }
 })

@@ -99,7 +99,7 @@ const formDialog = ref(false)
 const detailDialog = ref(false)
 const deleteDialog = ref(false)
 const editingIssue = ref<Issue | null>(null)
-const selectedIssue = ref<Issue | null>(null)
+const selectedIssueId = ref<string | null>(null)
 const deletingIssue = ref<Issue | null>(null)
 const snackbar = reactive({
   show: false,
@@ -122,6 +122,10 @@ const filteredIssues = computed(() => {
   })
 })
 
+const selectedIssue = computed(() =>
+  selectedIssueId.value ? (issueStore.getIssueById(selectedIssueId.value) ?? null) : null,
+)
+
 onMounted(() => {
   issueStore.load()
 })
@@ -143,7 +147,7 @@ function openEditDialog(issue: Issue): void {
 }
 
 function openDetailDialog(issue: Issue): void {
-  selectedIssue.value = issue
+  selectedIssueId.value = issue.id
   detailDialog.value = true
 }
 
@@ -172,8 +176,8 @@ function deleteSelectedIssue(): void {
   if (!deletingIssue.value) return
 
   issueStore.deleteIssue(deletingIssue.value.id)
-  if (selectedIssue.value?.id === deletingIssue.value.id) {
-    selectedIssue.value = null
+  if (selectedIssueId.value === deletingIssue.value.id) {
+    selectedIssueId.value = null
     detailDialog.value = false
   }
 
