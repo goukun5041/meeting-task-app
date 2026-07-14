@@ -8,9 +8,24 @@
             ステータス、優先度、期限を見ながら課題を管理できます。
           </p>
         </div>
-        <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreateDialog">
-          新規課題
-        </v-btn>
+        <div class="project-actions">
+          <v-select
+            :items="issueStore.projectSelectItems"
+            :model-value="issueStore.activeProjectId"
+            density="comfortable"
+            hide-details
+            label="プロジェクト"
+            min-width="220"
+            variant="outlined"
+            @update:model-value="changeProject"
+          />
+          <v-btn color="secondary" prepend-icon="mdi-folder-plus-outline" variant="tonal" @click="openProjectDialog">
+            新規プロジェクト
+          </v-btn>
+          <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreateDialog">
+            新規課題
+          </v-btn>
+        </div>
       </div>
 
       <div class="summary-grid mb-4">
@@ -51,6 +66,37 @@
 
     <IssueFormDialog v-model="formDialog" :issue="editingIssue" @save="saveIssue" />
     <IssueDetailDialog v-model="detailDialog" :issue="selectedIssue" @edit="editFromDetail" />
+
+    <v-dialog v-model="projectDialog" max-width="460" persistent>
+      <v-card>
+        <v-card-title>プロジェクト追加</v-card-title>
+        <v-divider />
+        <v-form ref="projectFormRef" @submit.prevent="createProject">
+          <v-card-text>
+            <v-text-field
+              v-model.trim="projectForm.name"
+              autofocus
+              counter="80"
+              label="プロジェクト名"
+              :rules="projectNameRules"
+            />
+          </v-card-text>
+          <v-divider />
+          <v-card-actions class="pa-4">
+            <v-spacer />
+            <v-btn variant="tonal" @click="projectDialog = false">キャンセル</v-btn>
+            <v-btn
+              color="primary"
+              :disabled="!projectForm.name.trim()"
+              prepend-icon="mdi-content-save-outline"
+              type="submit"
+            >
+              作成
+            </v-btn>
+          </v-card-actions>
+        </v-form>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="deleteDialog" max-width="460">
       <v-card>
@@ -101,13 +147,23 @@ const filters = reactive<{
 const formDialog = ref(false)
 const detailDialog = ref(false)
 const deleteDialog = ref(false)
+const projectDialog = ref(false)
 const editingIssue = ref<Issue | null>(null)
 const selectedIssueId = ref<string | null>(null)
 const deletingIssue = ref<Issue | null>(null)
+const projectFormRef = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null)
+const projectForm = reactive({
+  name: '',
+})
 const snackbar = reactive({
   show: false,
   message: '',
 })
+
+const projectNameRules = [
+  (value: string) => Boolean(value.trim()) || 'プロジェクト名は必須です',
+  (value: string) => value.length <= 80 || '80文字以内で入力してください',
+]
 
 const filteredIssues = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
@@ -139,6 +195,30 @@ function clearFilters(): void {
   filters.status = null
   filters.priority = null
   filters.hideCompleted = false
+}
+
+function changeProject(value: unknown): void {
+  if (typeof value !== 'string') return
+
+  issueStore.setActiveProject(value)
+  selectedIssueId.value = null
+  detailDialog.value = false
+}
+
+function openProjectDialog(): void {
+  projectForm.name = ''
+  projectDialog.value = true
+}
+
+async function createProject(): Promise<void> {
+  const result = await projectFormRef.value?.validate()
+  if (!result?.valid) return
+
+  const project = issueStore.createProject({ name: projectForm.name })
+  projectDialog.value = false
+  selectedIssueId.value = null
+  detailDialog.value = false
+  showMessage(`プロジェクト「${project.name}」を作成しました。`)
 }
 
 function openCreateDialog(): void {

@@ -27,6 +27,19 @@ body {
   justify-content: space-between;
 }
 
+.project-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.project-actions .v-select {
+  flex: 1 1 220px;
+  min-width: 220px;
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -68,6 +81,14 @@ body {
   .toolbar-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .project-actions {
+    justify-content: stretch;
+  }
+
+  .project-actions .v-btn {
+    flex: 1 1 auto;
   }
 
   .summary-grid {
