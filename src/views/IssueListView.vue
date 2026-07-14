@@ -36,6 +36,7 @@
         v-model:keyword="filters.keyword"
         v-model:priority="filters.priority"
         v-model:status="filters.status"
+        v-model:hide-completed="filters.hideCompleted"
         class="mb-4"
         @clear="clearFilters"
       />
@@ -89,10 +90,12 @@ const filters = reactive<{
   keyword: string
   status: FilterValue
   priority: FilterValue
+  hideCompleted: boolean
 }>({
   keyword: '',
   status: null,
   priority: null,
+  hideCompleted: false,
 })
 
 const formDialog = ref(false)
@@ -117,8 +120,9 @@ const filteredIssues = computed(() => {
 
     const matchesStatus = !filters.status || issue.status === filters.status
     const matchesPriority = !filters.priority || issue.priority === filters.priority
+    const matchesCompletion = !filters.hideCompleted || issue.status !== '完了'
 
-    return matchesKeyword && matchesStatus && matchesPriority
+    return matchesKeyword && matchesStatus && matchesPriority && matchesCompletion
   })
 })
 
@@ -134,6 +138,7 @@ function clearFilters(): void {
   filters.keyword = ''
   filters.status = null
   filters.priority = null
+  filters.hideCompleted = false
 }
 
 function openCreateDialog(): void {
