@@ -7,10 +7,6 @@
       :row-props="rowProps"
       item-value="id"
     >
-      <template #item.id="{ item }">
-        <span class="text-caption text-medium-emphasis">{{ shortId(item.id) }}</span>
-      </template>
-
       <template #item.title="{ item }">
         <div class="font-weight-medium">{{ item.title }}</div>
         <div v-if="item.description" class="text-caption text-medium-emphasis text-truncate">
@@ -82,17 +78,12 @@ defineEmits<{
 }>()
 
 const headers = [
-  { title: 'ID', key: 'id', width: 120 },
   { title: 'タイトル', key: 'title', minWidth: 260 },
   { title: 'ステータス', key: 'status', width: 150 },
   { title: '優先度', key: 'priority', width: 120 },
   { title: '期限', key: 'dueDate', width: 140 },
   { title: '操作', key: 'actions', width: 150, align: 'end' as const, sortable: false },
 ]
-
-function shortId(id: string): string {
-  return id.startsWith('issue-') ? id.replace('issue-', '').slice(0, 8) : id.slice(0, 8)
-}
 
 function rowProps({ item }: { item: Issue }) {
   return {

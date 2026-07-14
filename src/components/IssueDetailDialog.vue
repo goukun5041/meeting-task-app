@@ -11,10 +11,6 @@
       <v-card-text>
         <v-row dense>
           <v-col cols="12" sm="6">
-            <div class="text-caption text-medium-emphasis">ID</div>
-            <div class="font-weight-medium">{{ issue.id }}</div>
-          </v-col>
-          <v-col cols="12" sm="6">
             <div class="text-caption text-medium-emphasis">期限</div>
             <div class="font-weight-medium">{{ formatDate(issue.dueDate) }}</div>
           </v-col>
