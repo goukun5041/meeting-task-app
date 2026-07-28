@@ -66,6 +66,10 @@ beforeEach(() => {
     if (query.includes('INSERT INTO users')) return [{ id: 'user-1' }]
     return []
   })
+  mocks.transaction.mockImplementation(async (factory: (tx: any) => Promise<unknown>[]) => {
+    const pending = factory({ query: (query: string, params?: unknown[]) => mocks.query(query, params) })
+    return await Promise.all(pending)
+  })
 })
 
 describe('api auth', () => {
@@ -123,8 +127,173 @@ describe('api auth', () => {
   })
 })
 
+describe('api write serialization', () => {
+  const writeCases = [
+    {
+      method: 'POST',
+      path: '/api/projects',
+      body: { name: 'Project' },
+      marker: 'INSERT INTO projects',
+    },
+    {
+      method: 'PUT',
+      path: '/api/projects/project-1',
+      body: { name: 'Project', updatedAt: '2026-07-01T00:00:00.000Z' },
+      marker: 'UPDATE projects',
+    },
+    { method: 'DELETE', path: '/api/projects/project-1', marker: 'DELETE FROM projects' },
+    {
+      method: 'POST',
+      path: '/api/tasks',
+      body: {
+        projectId: 'project-1',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: null,
+      },
+      marker: 'INSERT INTO tasks',
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/task-1',
+      body: {
+        projectId: 'project-1',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: null,
+        updatedAt: '2026-07-01T00:00:00.000Z',
+      },
+      marker: 'UPDATE tasks',
+    },
+    { method: 'DELETE', path: '/api/tasks/task-1', marker: 'DELETE FROM tasks' },
+    {
+      method: 'POST',
+      path: '/api/tasks/task-1/histories',
+      body: { date: '2026-07-01', content: 'History' },
+      marker: 'INSERT INTO task_histories',
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/task-1/histories/history-1',
+      body: { date: '2026-07-01', content: 'History', updatedAt: '2026-07-01T00:00:00.000Z' },
+      marker: 'UPDATE task_histories',
+    },
+    {
+      method: 'DELETE',
+      path: '/api/tasks/task-1/histories/history-1',
+      marker: 'DELETE FROM task_histories',
+    },
+  ]
+
+  it.each(writeCases)('$method $path participates in the migration user lock', async ({ method, path, body, marker }) => {
+    const queries: string[] = []
+    mocks.query.mockImplementation(async (query: string) => {
+      queries.push(query)
+      if (query.includes('SELECT id, email, display_name FROM users')) {
+        return [{ id: 'user-1', email: 'user@example.com', display_name: 'User' }]
+      }
+      if (query.includes('SELECT id FROM projects') || query.includes('SELECT id FROM tasks')) return [{ id: 'parent-1' }]
+      if (query.includes(marker)) {
+        return [
+          {
+            id: 'result-1',
+            name: 'Project',
+            project_id: 'project-1',
+            title: 'Task',
+            description: '',
+            status: '未着手',
+            priority: '中',
+            due_date: null,
+            task_id: 'task-1',
+            action_date: '2026-07-01',
+            content: 'History',
+            created_at: '2026-07-01T00:00:00.000Z',
+            updated_at: '2026-07-01T00:00:00.000Z',
+          },
+        ]
+      }
+      return []
+    })
+
+    const response = await handler(
+      authedEvent({ method, path, body: body ? JSON.stringify(body) : null }),
+      {} as any,
+      () => undefined,
+    )
+
+    expect(response?.statusCode).toBeLessThan(400)
+    const writeIndex = queries.findIndex((query) => query.includes(marker))
+    const writeQuery = queries[writeIndex]
+    expect(writeIndex).toBeGreaterThan(0)
+    expect(queries[writeIndex - 1]).toContain('FOR UPDATE')
+    if (method === 'PUT') {
+      expect(writeQuery).toContain("date_trunc('milliseconds', target.updated_at)")
+    }
+  })
+
+  const missingParentCases = [
+    {
+      method: 'POST',
+      path: '/api/tasks',
+      body: {
+        projectId: 'missing-project',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: null,
+      },
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/task-1',
+      body: {
+        projectId: 'missing-project',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: null,
+        updatedAt: '2026-07-01T00:00:00.000Z',
+      },
+    },
+    {
+      method: 'POST',
+      path: '/api/tasks/missing-task/histories',
+      body: { date: '2026-07-01', content: 'History' },
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/missing-task/histories/history-1',
+      body: { date: '2026-07-01', content: 'History', updatedAt: '2026-07-01T00:00:00.000Z' },
+    },
+  ]
+
+  it.each(missingParentCases)('$method $path returns 404 when migration removed the parent', async ({ method, path, body }) => {
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query.includes('SELECT id, email, display_name FROM users')) {
+        return [{ id: 'user-1', email: 'user@example.com', display_name: 'User' }]
+      }
+      return []
+    })
+
+    const response = await handler(
+      authedEvent({ method, path, body: JSON.stringify(body) }),
+      {} as any,
+      () => undefined,
+    )
+
+    expect(response?.statusCode).toBe(404)
+    expect(JSON.parse(response?.body ?? '{}').error.code).toBe('not_found')
+  })
+})
+
 describe('api migration', () => {
-  const migrationBody = JSON.stringify({
+  const migrationData = {
     version: 2,
     activeProjectId: 'project-1',
     projects: [
@@ -135,10 +304,35 @@ describe('api migration', () => {
         updatedAt: '2026-07-01T00:00:00.000Z',
       },
     ],
-    issues: [],
-  })
+    issues: [
+      {
+        id: 'task-1',
+        projectId: 'project-1',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: null,
+        createdAt: '2026-07-01T00:00:00.000Z',
+        updatedAt: '2026-07-02T00:00:00.000Z',
+        histories: [
+          {
+            id: 'history-1',
+            date: '2026-07-02',
+            content: 'Updated',
+            createdAt: '2026-07-02T00:00:00.000Z',
+            updatedAt: '2026-07-02T00:00:00.000Z',
+          },
+        ],
+      },
+    ],
+  }
 
-  it('claims the migration inside the database transaction', async () => {
+  function migrationBody(mode: 'merge' | 'overwrite') {
+    return JSON.stringify({ mode, data: migrationData })
+  }
+
+  it('merges local data under a user row lock and prefers newer timestamps', async () => {
     const queries: string[] = []
     mocks.transaction.mockImplementation(async (factory: (tx: any) => unknown[]) => {
       factory({
@@ -151,26 +345,93 @@ describe('api migration', () => {
     })
 
     const response = await handler(
-      authedEvent({ method: 'POST', path: '/api/migration/import-local-data', body: migrationBody }),
+      authedEvent({ method: 'POST', path: '/api/migration/import-local-data', body: migrationBody('merge') }),
       {} as any,
       () => undefined,
     )
 
     expect(response?.statusCode).toBe(200)
-    expect(queries[0]).toContain('begin_local_data_migration')
+    expect(queries[0]).toContain('FOR UPDATE')
+    expect(queries.some((query) => query.includes('DELETE FROM projects'))).toBe(false)
+    expect(queries.some((query) => query.includes("set_config('meeting_task_app.preserve_updated_at'"))).toBe(true)
+    expect(queries.some((query) => query.includes('CREATE TEMP TABLE local_project_snapshot'))).toBe(true)
+    expect(
+      queries.some(
+        (query) => query.includes('CREATE TEMP TABLE local_project_map') && query.includes('target_id TEXT NOT NULL UNIQUE'),
+      ),
+    ).toBe(true)
+    expect(queries.some((query) => query.includes('CREATE TEMP TABLE local_project_updates'))).toBe(true)
+    expect(queries.some((query) => query.includes('INSERT INTO local_project_map'))).toBe(true)
+    const exactIdMappingIndex = queries.findIndex((query) => query.includes('snapshot.id = $1'))
+    const nameMappingIndex = queries.findIndex((query) => query.includes('snapshot.name = $2'))
+    expect(exactIdMappingIndex).toBeGreaterThan(0)
+    expect(nameMappingIndex).toBeGreaterThan(exactIdMappingIndex)
+    const temporaryRenameIndex = queries.findIndex(
+      (query) => query.includes('UPDATE projects AS target') && !query.includes('created_at = LEAST'),
+    )
+    const captureUpdatesIndex = queries.findIndex((query) => query.includes('INSERT INTO local_project_updates'))
+    const finalRenameIndex = queries.findIndex(
+      (query) => query.includes('UPDATE projects AS target') && query.includes('created_at = LEAST'),
+    )
+    expect(captureUpdatesIndex).toBeGreaterThan(nameMappingIndex)
+    expect(temporaryRenameIndex).toBeGreaterThan(captureUpdatesIndex)
+    expect(finalRenameIndex).toBeGreaterThan(temporaryRenameIndex)
+    expect(queries.some((query) => query.includes('FROM local_project_map AS mapping'))).toBe(true)
+    expect(queries.some((query) => query.includes('EXCLUDED.updated_at > tasks.updated_at'))).toBe(true)
+    expect(queries.some((query) => query.includes('EXCLUDED.updated_at > task_histories.updated_at'))).toBe(true)
   })
 
-  it('returns 409 when the database rejects a repeated migration', async () => {
-    mocks.transaction.mockRejectedValue(Object.assign(new Error('already migrated'), { code: 'P0001' }))
+  it('deletes existing server projects before overwriting them with local data', async () => {
+    const queries: string[] = []
+    mocks.transaction.mockImplementation(async (factory: (tx: any) => unknown[]) => {
+      factory({
+        query: (query: string) => {
+          queries.push(query)
+          return { queryData: {} }
+        },
+      })
+      return []
+    })
 
     const response = await handler(
-      authedEvent({ method: 'POST', path: '/api/migration/import-local-data', body: migrationBody }),
+      authedEvent({ method: 'POST', path: '/api/migration/import-local-data', body: migrationBody('overwrite') }),
+      {} as any,
+      () => undefined,
+    )
+
+    expect(response?.statusCode).toBe(200)
+    const deleteIndex = queries.findIndex((query) => query.includes('DELETE FROM projects'))
+    const insertIndex = queries.findIndex((query) => query.includes('INSERT INTO projects'))
+    expect(deleteIndex).toBeGreaterThan(0)
+    expect(insertIndex).toBeGreaterThan(deleteIndex)
+  })
+
+  it('rejects an unsupported migration mode', async () => {
+    const response = await handler(
+      authedEvent({
+        method: 'POST',
+        path: '/api/migration/import-local-data',
+        body: JSON.stringify({ mode: 'append', data: migrationData }),
+      }),
+      {} as any,
+      () => undefined,
+    )
+
+    expect(response?.statusCode).toBe(400)
+    expect(mocks.transaction).not.toHaveBeenCalled()
+  })
+
+  it('rolls back and reports an ambiguous project merge as a merge conflict', async () => {
+    mocks.transaction.mockRejectedValue(Object.assign(new Error('duplicate target or project name'), { code: '23505' }))
+
+    const response = await handler(
+      authedEvent({ method: 'POST', path: '/api/migration/import-local-data', body: migrationBody('merge') }),
       {} as any,
       () => undefined,
     )
 
     expect(response?.statusCode).toBe(409)
-    expect(JSON.parse(response?.body ?? '{}')).toMatchObject({ error: { code: 'already_migrated' } })
+    expect(JSON.parse(response?.body ?? '{}')).toMatchObject({ error: { code: 'merge_conflict' } })
   })
 })
 

@@ -56,3 +56,4 @@ $RECYCLE.BIN/
 *.lnk
 # Netlify local state
 .netlify/
+deno.lock

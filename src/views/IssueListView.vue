@@ -92,17 +92,54 @@
     <IssueFormDialog v-model="formDialog" :issue="editingIssue" @save="saveIssue" />
     <IssueDetailDialog v-model="detailDialog" :issue="selectedIssue" @edit="editFromDetail" />
 
-    <v-dialog v-model="migrationDialog" max-width="560" persistent>
+    <v-dialog v-model="migrationDialog" max-width="680" persistent>
       <v-card>
         <v-card-title>ローカルデータの移行</v-card-title>
         <v-card-text>
-          このブラウザに保存されている課題データをサーバーへ移行できます。移行は承認した場合のみ実行され、成功後に元データはバックアップされます。
+          <p class="mb-3">
+            このPCには、{{ migrationLocalCounts.projects }}件のプロジェクトと
+            {{ migrationLocalCounts.issues }}件の課題が保存されています。
+          </p>
+          <v-alert v-if="migrationHasServerData" type="warning" variant="tonal">
+            サーバーには既に{{ issueStore.projects.length }}件のプロジェクトがあります。「マージ」は同じIDを優先して同名のプロジェクトをまとめ、同じ課題・履歴は更新日時が新しい方を採用します。IDと名前が交差して安全に対応付けできない場合は中止し、このPCのデータを残します。「上書き」はサーバー上の既存データをすべて削除し、このPCのデータへ置き換えます。
+          </v-alert>
+          <p v-else class="mb-0">
+            このブラウザのデータをサーバーへ移行します。成功後、元データはブラウザ内にバックアップされます。
+          </p>
+        </v-card-text>
+        <v-card-actions class="pa-4 flex-wrap">
+          <v-spacer />
+          <v-btn variant="tonal" :disabled="migrationRunning" @click="skipMigration">あとで</v-btn>
+          <v-btn
+            v-if="migrationHasServerData"
+            color="error"
+            variant="outlined"
+            :disabled="migrationRunning"
+            @click="requestOverwrite"
+          >
+            このPCのデータで上書き
+          </v-btn>
+          <v-btn color="primary" :loading="migrationRunning" @click="migrateLocalData('merge')">
+            {{ migrationHasServerData ? '新しい方を優先してマージ' : '移行する' }}
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <v-dialog v-model="overwriteConfirmDialog" max-width="560" persistent>
+      <v-card>
+        <v-card-title>サーバーデータを上書きしますか？</v-card-title>
+        <v-card-text>
+          <v-alert type="error" variant="tonal" class="mb-3">
+            サーバー上のプロジェクト、課題、履歴をすべて削除し、このPCのローカルデータへ置き換えます。この操作はサーバー上では元に戻せません。
+          </v-alert>
+          実行後、このPCの元データはブラウザ内にバックアップされます。
         </v-card-text>
         <v-card-actions class="pa-4">
           <v-spacer />
-          <v-btn variant="tonal" :disabled="migrationRunning" @click="skipMigration">あとで</v-btn>
-          <v-btn color="primary" :loading="migrationRunning" @click="migrateLocalData">
-            移行する
+          <v-btn variant="tonal" :disabled="migrationRunning" @click="cancelOverwrite">キャンセル</v-btn>
+          <v-btn color="error" :loading="migrationRunning" @click="confirmOverwrite">
+            削除して上書きする
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -170,7 +207,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 
-import { importLocalData } from '../api/migrationApi'
+import { importLocalData, type LocalDataImportMode } from '../api/migrationApi'
 import IssueDetailDialog from '../components/IssueDetailDialog.vue'
 import IssueFilterBar, { type FilterValue } from '../components/IssueFilterBar.vue'
 import IssueFormDialog from '../components/IssueFormDialog.vue'
@@ -201,7 +238,10 @@ const detailDialog = ref(false)
 const deleteDialog = ref(false)
 const projectDialog = ref(false)
 const migrationDialog = ref(false)
+const overwriteConfirmDialog = ref(false)
 const migrationRunning = ref(false)
+const migrationHasServerData = ref(false)
+const migrationLocalCounts = reactive({ projects: 0, issues: 0 })
 const editingIssue = ref<Issue | null>(null)
 const selectedIssueId = ref<string | null>(null)
 const deletingIssue = ref<Issue | null>(null)
@@ -236,8 +276,13 @@ onMounted(async () => {
 })
 
 function maybePromptMigration(): void {
-  if (issueStore.errorMessage || issueStore.hasServerData) return
-  if (loadLocalAppData()) migrationDialog.value = true
+  if (issueStore.errorMessage) return
+  const localData = loadLocalAppData()
+  if (!localData) return
+  migrationHasServerData.value = issueStore.hasServerData
+  migrationLocalCounts.projects = localData.projects.length
+  migrationLocalCounts.issues = localData.issues.length
+  migrationDialog.value = true
 }
 
 function clearFilters(): void {
@@ -319,20 +364,25 @@ async function deleteSelectedIssue(): Promise<void> {
   showMessage('課題を削除しました。')
 }
 
-async function migrateLocalData(): Promise<void> {
+async function migrateLocalData(mode: LocalDataImportMode): Promise<void> {
   const localData = loadLocalAppData()
   if (!localData) return
   migrationRunning.value = true
   try {
-    await importLocalData(localData)
+    await importLocalData(localData, mode)
     migrationDialog.value = false
+    overwriteConfirmDialog.value = false
 
-    let message = 'ローカルデータを移行しました。'
+    let message = mode === 'overwrite'
+      ? 'サーバーデータをこのPCのデータで上書きしました。'
+      : migrationHasServerData.value
+        ? 'ローカルデータとサーバーデータをマージしました。'
+        : 'ローカルデータを移行しました。'
     try {
       const backupKey = backupAndClearLocalAppData()
-      if (backupKey) message = 'ローカルデータを移行し、バックアップを作成しました。'
+      if (backupKey) message += ' ローカルバックアップを作成しました。'
     } catch {
-      message = 'サーバーへの移行は成功しましたが、ローカルバックアップを作成できませんでした。'
+      message += ' サーバー処理は成功しましたが、ローカルバックアップを作成できませんでした。'
     }
 
     await issueStore.load()
@@ -341,6 +391,7 @@ async function migrateLocalData(): Promise<void> {
     }
     showMessage(message)
   } catch (error) {
+    if (loadLocalAppData()) migrationDialog.value = true
     showMessage(error instanceof Error ? error.message : '移行に失敗しました。')
   } finally {
     migrationRunning.value = false
@@ -349,6 +400,21 @@ async function migrateLocalData(): Promise<void> {
 
 function skipMigration(): void {
   migrationDialog.value = false
+}
+
+function requestOverwrite(): void {
+  migrationDialog.value = false
+  overwriteConfirmDialog.value = true
+}
+
+function cancelOverwrite(): void {
+  overwriteConfirmDialog.value = false
+  migrationDialog.value = true
+}
+
+async function confirmOverwrite(): Promise<void> {
+  overwriteConfirmDialog.value = false
+  await migrateLocalData('overwrite')
 }
 
 function showMessage(message: string): void {

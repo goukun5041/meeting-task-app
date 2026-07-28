@@ -9,4 +9,9 @@ export default defineConfig({
       autoImport: true,
     }),
   ],
+  server: {
+    watch: {
+      ignored: ['**/.netlify/**'],
+    },
+  },
 })

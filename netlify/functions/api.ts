@@ -72,6 +72,12 @@ const migrationSchema = z
     issues: z.array(migrationTaskSchema).max(5000),
   })
   .strict()
+const migrationRequestSchema = z
+  .object({
+    mode: z.enum(['merge', 'overwrite']),
+    data: migrationSchema,
+  })
+  .strict()
 
 type AuthedContext = {
   userId: string
@@ -119,7 +125,8 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
   if (segments.length === 1 && event.httpMethod === 'POST') {
     const input = projectInputSchema.parse(readJson(event))
     const id = createId('project')
-    const rows = await database().query(
+    const rows = await executeUserWrite(
+      auth.userId,
       `INSERT INTO projects (id, user_id, name)
        VALUES ($1, $2, $3)
        RETURNING id, name, created_at, updated_at`,
@@ -131,11 +138,14 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
   if (segments.length === 2 && event.httpMethod === 'PUT') {
     const projectId = parseId(segments[1])
     const input = projectUpdateSchema.parse(readJson(event))
-    const rows = await database().query(
-      `UPDATE projects
+    const rows = await executeUserWrite(
+      auth.userId,
+      `UPDATE projects AS target
        SET name = $3
-       WHERE user_id = $1 AND id = $2 AND updated_at = $4::timestamptz
-       RETURNING id, name, created_at, updated_at`,
+       WHERE target.user_id = $1
+         AND target.id = $2
+         AND date_trunc('milliseconds', target.updated_at) = $4::timestamptz
+       RETURNING target.id, target.name, target.created_at, target.updated_at`,
       [auth.userId, projectId, input.name, input.updatedAt],
     )
     if (rows.length) return json({ project: mapProject(rows[0]) })
@@ -144,8 +154,11 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
 
   if (segments.length === 2 && event.httpMethod === 'DELETE') {
     const projectId = parseId(segments[1])
-    const rows = await database().query(
-      `DELETE FROM projects WHERE user_id = $1 AND id = $2 RETURNING id`,
+    const rows = await executeUserWrite(
+      auth.userId,
+      `DELETE FROM projects AS target
+       WHERE target.user_id = $1 AND target.id = $2
+       RETURNING target.id`,
       [auth.userId, projectId],
     )
     if (!rows.length) throw new ApiError(404, 'not_found', 'Project not found')
@@ -160,14 +173,17 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
 
   if (segments.length === 1 && event.httpMethod === 'POST') {
     const input = taskInputSchema.parse(readJson(event))
-    await ensureProject(auth.userId, input.projectId)
     const id = createId('issue')
-    const rows = await database().query(
+    const rows = await executeUserWrite(
+      auth.userId,
       `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
+       SELECT $1, $2, parent.id, $4, $5, $6, $7, $8
+       FROM projects AS parent
+       WHERE parent.user_id = $2 AND parent.id = $3
+       RETURNING tasks.*`,
       [id, auth.userId, input.projectId, input.title, input.description, input.status, input.priority, input.dueDate],
     )
+    if (!rows.length) throw new ApiError(404, 'not_found', 'Project not found')
     return json({ task: mapTask(rows[0]) }, 201)
   }
 
@@ -181,12 +197,17 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
   if (segments.length === 2 && event.httpMethod === 'PUT') {
     const taskId = parseId(segments[1])
     const input = taskUpdateSchema.parse(readJson(event))
-    await ensureProject(auth.userId, input.projectId)
-    const rows = await database().query(
-      `UPDATE tasks
+    const rows = await executeUserWrite(
+      auth.userId,
+      `UPDATE tasks AS target
        SET project_id = $3, title = $4, description = $5, status = $6, priority = $7, due_date = $8
-       WHERE user_id = $1 AND id = $2 AND updated_at = $9::timestamptz
-       RETURNING *`,
+       FROM projects AS parent
+       WHERE target.user_id = $1
+         AND target.id = $2
+         AND parent.user_id = $1
+         AND parent.id = $3
+         AND date_trunc('milliseconds', target.updated_at) = $9::timestamptz
+       RETURNING target.*`,
       [
         auth.userId,
         taskId,
@@ -200,12 +221,19 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
       ],
     )
     if (rows.length) return json({ task: mapTask(rows[0]) })
+    await ensureProject(auth.userId, input.projectId)
     return await throwConflictOrNotFound('tasks', auth.userId, taskId)
   }
 
   if (segments.length === 2 && event.httpMethod === 'DELETE') {
     const taskId = parseId(segments[1])
-    const rows = await database().query(`DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`, [auth.userId, taskId])
+    const rows = await executeUserWrite(
+      auth.userId,
+      `DELETE FROM tasks AS target
+       WHERE target.user_id = $1 AND target.id = $2
+       RETURNING target.id`,
+      [auth.userId, taskId],
+    )
     if (!rows.length) throw new ApiError(404, 'not_found', 'Task not found')
     return empty(204)
   }
@@ -267,14 +295,17 @@ async function listHistories(auth: AuthedContext, taskIdRaw: string) {
 async function createHistory(event: HandlerEvent, auth: AuthedContext, taskIdRaw: string) {
   const taskId = parseId(taskIdRaw)
   const input = historyInputSchema.parse(readJson(event))
-  await ensureTask(auth.userId, taskId)
   const id = createId('history')
-  const rows = await database().query(
+  const rows = await executeUserWrite(
+    auth.userId,
     `INSERT INTO task_histories (id, user_id, task_id, action_date, content)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING *`,
+     SELECT $1, $2, parent.id, $4, $5
+     FROM tasks AS parent
+     WHERE parent.user_id = $2 AND parent.id = $3
+     RETURNING task_histories.*`,
     [id, auth.userId, taskId, input.date, input.content],
   )
+  if (!rows.length) throw new ApiError(404, 'not_found', 'Task not found')
   return json({ history: mapHistory(rows[0]) }, 201)
 }
 
@@ -282,23 +313,33 @@ async function updateHistory(event: HandlerEvent, auth: AuthedContext, taskIdRaw
   const taskId = parseId(taskIdRaw)
   const historyId = parseId(historyIdRaw)
   const input = historyUpdateSchema.parse(readJson(event))
-  await ensureTask(auth.userId, taskId)
-  const rows = await database().query(
-    `UPDATE task_histories
+  const rows = await executeUserWrite(
+    auth.userId,
+    `UPDATE task_histories AS target
      SET action_date = $4, content = $5
-     WHERE user_id = $1 AND task_id = $2 AND id = $3 AND updated_at = $6::timestamptz
-     RETURNING *`,
+     FROM tasks AS parent
+     WHERE target.user_id = $1
+       AND target.task_id = $2
+       AND target.id = $3
+       AND parent.user_id = $1
+       AND parent.id = $2
+       AND date_trunc('milliseconds', target.updated_at) = $6::timestamptz
+     RETURNING target.*`,
     [auth.userId, taskId, historyId, input.date, input.content, input.updatedAt],
   )
   if (rows.length) return json({ history: mapHistory(rows[0]) })
+  await ensureTask(auth.userId, taskId)
   return await throwConflictOrNotFound('task_histories', auth.userId, historyId, taskId)
 }
 
 async function deleteHistory(auth: AuthedContext, taskIdRaw: string, historyIdRaw: string) {
   const taskId = parseId(taskIdRaw)
   const historyId = parseId(historyIdRaw)
-  const rows = await database().query(
-    `DELETE FROM task_histories WHERE user_id = $1 AND task_id = $2 AND id = $3 RETURNING id`,
+  const rows = await executeUserWrite(
+    auth.userId,
+    `DELETE FROM task_histories AS target
+     WHERE target.user_id = $1 AND target.task_id = $2 AND target.id = $3
+     RETURNING target.id`,
     [auth.userId, taskId, historyId],
   )
   if (!rows.length) throw new ApiError(404, 'not_found', 'History not found')
@@ -310,7 +351,7 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
     return error(405, 'method_not_allowed', 'Method not allowed')
   }
 
-  const data = migrationSchema.parse(readJson(event))
+  const { mode, data } = migrationRequestSchema.parse(readJson(event))
   const projectIds = new Set(data.projects.map((project) => project.id))
   if (!projectIds.has(data.activeProjectId)) throw new ApiError(400, 'validation_error', 'activeProjectId is invalid')
   for (const task of data.issues) {
@@ -319,7 +360,42 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
 
   try {
     await database().transaction((tx) => {
-      const queries = [tx.query(`SELECT begin_local_data_migration($1)`, [auth.userId])]
+      const queries = [
+      tx.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [auth.userId]),
+      tx.query(
+        `UPDATE users
+         SET local_data_migrated_at = COALESCE(local_data_migrated_at, NOW())
+         WHERE id = $1`,
+        [auth.userId],
+      ),
+    ]
+
+    if (mode === 'overwrite') {
+      queries.push(tx.query(`DELETE FROM projects WHERE user_id = $1`, [auth.userId]))
+    } else {
+      queries.push(
+        tx.query(`SELECT set_config('meeting_task_app.preserve_updated_at', 'on', TRUE)`),
+        tx.query(
+          `CREATE TEMP TABLE local_project_snapshot ON COMMIT DROP AS
+           SELECT id, name FROM projects WHERE user_id = $1`,
+          [auth.userId],
+        ),
+        tx.query(
+          `CREATE TEMP TABLE local_project_map (
+             local_id TEXT PRIMARY KEY,
+             target_id TEXT NOT NULL UNIQUE,
+             local_name TEXT NOT NULL
+           ) ON COMMIT DROP`,
+        ),
+        tx.query(
+          `CREATE TEMP TABLE local_project_updates (
+             local_id TEXT PRIMARY KEY
+           ) ON COMMIT DROP`,
+        ),
+      )
+    }
+
+    if (mode === 'overwrite') {
       for (const project of data.projects) {
         queries.push(
           tx.query(
@@ -329,7 +405,128 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
           ),
         )
       }
-      for (const task of data.issues) {
+    } else {
+      // Reserve every exact ID match before considering names so input order cannot collapse two projects.
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `INSERT INTO local_project_map (local_id, target_id, local_name)
+             SELECT $1, snapshot.id, $2
+             FROM local_project_snapshot AS snapshot
+             WHERE snapshot.id = $1`,
+            [project.id, project.name],
+          ),
+        )
+      }
+
+      // A same-name match is allowed only when an exact-ID mapping has not already reserved that server project.
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `INSERT INTO local_project_map (local_id, target_id, local_name)
+             SELECT $1,
+                    COALESCE(
+                      (
+                        SELECT snapshot.id
+                        FROM local_project_snapshot AS snapshot
+                        WHERE snapshot.name = $2
+                          AND NOT EXISTS (
+                            SELECT 1 FROM local_project_map AS reserved
+                            WHERE reserved.target_id = snapshot.id
+                          )
+                      ),
+                      $1
+                    ),
+                    $2
+             WHERE NOT EXISTS (
+               SELECT 1 FROM local_project_map AS mapped WHERE mapped.local_id = $1
+             )`,
+            [project.id, project.name],
+          ),
+        )
+      }
+
+      // Capture update eligibility before temporary renames can affect updated_at on an older database trigger.
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `INSERT INTO local_project_updates (local_id)
+             SELECT mapping.local_id
+             FROM local_project_map AS mapping
+             JOIN projects AS target
+               ON target.user_id = $1 AND target.id = mapping.target_id
+             WHERE mapping.local_id = $2
+               AND $3::timestamptz > target.updated_at`,
+            [auth.userId, project.id, project.updatedAt],
+          ),
+        )
+      }
+
+      // Free every name that will be changed before applying final names, making rename chains input-order independent.
+      const temporaryProjectNames = new Map(
+        data.projects.map((project) => [project.id, `__local_merge_${randomUUID()}__`]),
+      )
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `UPDATE projects AS target
+             SET name = $3
+             FROM local_project_map AS mapping
+             JOIN local_project_updates AS selected
+               ON selected.local_id = mapping.local_id
+             WHERE mapping.local_id = $2
+               AND target.user_id = $1
+               AND target.id = mapping.target_id
+               AND target.name <> $4`,
+            [
+              auth.userId,
+              project.id,
+              temporaryProjectNames.get(project.id),
+              project.name,
+            ],
+          ),
+        )
+      }
+
+      // Apply final names and timestamps. Duplicate final names raise 23505 and roll back rather than losing identity.
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `UPDATE projects AS target
+             SET name = $3,
+                 created_at = LEAST(target.created_at, $4::timestamptz),
+                 updated_at = $5::timestamptz
+             FROM local_project_map AS mapping
+             JOIN local_project_updates AS selected
+               ON selected.local_id = mapping.local_id
+             WHERE mapping.local_id = $2
+               AND target.user_id = $1
+               AND target.id = mapping.target_id`,
+            [auth.userId, project.id, project.name, project.createdAt, project.updatedAt],
+          ),
+        )
+      }
+
+      // Exact-ID renames above may have freed a name needed by a new local project.
+      for (const project of data.projects) {
+        queries.push(
+          tx.query(
+            `INSERT INTO projects (id, user_id, name, created_at, updated_at)
+             SELECT mapping.target_id, $1, $3, $4::timestamptz, $5::timestamptz
+             FROM local_project_map AS mapping
+             WHERE mapping.local_id = $2
+               AND NOT EXISTS (
+                 SELECT 1 FROM projects AS target
+                 WHERE target.user_id = $1 AND target.id = mapping.target_id
+               )`,
+            [auth.userId, project.id, project.name, project.createdAt, project.updatedAt],
+          ),
+        )
+      }
+    }
+
+    for (const task of data.issues) {
+      if (mode === 'overwrite') {
         queries.push(
           tx.query(
             `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
@@ -348,7 +545,43 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
             ],
           ),
         )
-        for (const history of task.histories) {
+      } else {
+        queries.push(
+          tx.query(
+            `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
+             SELECT $2, $1, target_project.id, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz
+             FROM local_project_map AS mapping
+             JOIN projects AS target_project
+               ON target_project.user_id = $1 AND target_project.id = mapping.target_id
+             WHERE mapping.local_id = $3
+             ON CONFLICT (user_id, id) DO UPDATE
+             SET project_id = EXCLUDED.project_id,
+                 title = EXCLUDED.title,
+                 description = EXCLUDED.description,
+                 status = EXCLUDED.status,
+                 priority = EXCLUDED.priority,
+                 due_date = EXCLUDED.due_date,
+                 created_at = LEAST(tasks.created_at, EXCLUDED.created_at),
+                 updated_at = EXCLUDED.updated_at
+             WHERE EXCLUDED.updated_at > tasks.updated_at`,
+            [
+              auth.userId,
+              task.id,
+              task.projectId,
+              task.title,
+              task.description,
+              task.status,
+              task.priority,
+              task.dueDate,
+              task.createdAt,
+              task.updatedAt,
+            ],
+          ),
+        )
+      }
+
+      for (const history of task.histories) {
+        if (mode === 'overwrite') {
           queries.push(
             tx.query(
               `INSERT INTO task_histories (id, user_id, task_id, action_date, content, created_at, updated_at)
@@ -356,18 +589,39 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
               [history.id, auth.userId, task.id, history.date, history.content, history.createdAt, history.updatedAt],
             ),
           )
+          continue
         }
+
+        queries.push(
+          tx.query(
+            `INSERT INTO task_histories (id, user_id, task_id, action_date, content, created_at, updated_at)
+             VALUES ($2, $1, $3, $4, $5, $6::timestamptz, $7::timestamptz)
+             ON CONFLICT (user_id, id) DO UPDATE
+             SET task_id = EXCLUDED.task_id,
+                 action_date = EXCLUDED.action_date,
+                 content = EXCLUDED.content,
+                 created_at = LEAST(task_histories.created_at, EXCLUDED.created_at),
+                 updated_at = EXCLUDED.updated_at
+             WHERE EXCLUDED.updated_at > task_histories.updated_at`,
+            [auth.userId, history.id, task.id, history.date, history.content, history.createdAt, history.updatedAt],
+          ),
+        )
       }
+    }
       return queries
     })
   } catch (err) {
-    if (getErrorCode(err) === 'P0001') {
-      throw new ApiError(409, 'already_migrated', 'Local data migration is not available for this account')
+    if (mode === 'merge' && getErrorCode(err) === '23505') {
+      throw new ApiError(
+        409,
+        'merge_conflict',
+        'プロジェクトのIDまたは名前が競合しています。ローカル側のプロジェクト名を変更するか、上書きを選択してください。',
+      )
     }
     throw err
   }
 
-  return json({ imported: true })
+  return json({ imported: true, mode })
 }
 
 async function requireAuth(event: HandlerEvent): Promise<AuthedContext> {
@@ -433,6 +687,14 @@ function database(): NeonQueryFunction<false, false> {
   if (!databaseUrl) throw new ApiError(500, 'server_config_error', 'Database is not configured')
   sql = neon(databaseUrl)
   return sql
+}
+
+async function executeUserWrite(userId: string, query: string, params: unknown[]): Promise<any[]> {
+  const results = await database().transaction((tx) => [
+    tx.query(`SELECT id FROM users WHERE id = $1 FOR UPDATE`, [userId]),
+    tx.query(query, params),
+  ])
+  return results[1]
 }
 
 function readJson(event: HandlerEvent): unknown {
