@@ -10,6 +10,7 @@
         </div>
         <div class="project-actions">
           <v-select
+            :disabled="issueStore.loading || issueStore.saving"
             :items="issueStore.projectSelectItems"
             :model-value="issueStore.activeProjectId"
             density="comfortable"
@@ -19,14 +20,33 @@
             variant="outlined"
             @update:model-value="changeProject"
           />
-          <v-btn color="secondary" prepend-icon="mdi-folder-plus-outline" variant="tonal" @click="openProjectDialog">
+          <v-btn
+            color="secondary"
+            :disabled="issueStore.saving"
+            prepend-icon="mdi-folder-plus-outline"
+            variant="tonal"
+            @click="openProjectDialog"
+          >
             新規プロジェクト
           </v-btn>
-          <v-btn color="primary" prepend-icon="mdi-plus" @click="openCreateDialog">
+          <v-btn
+            color="primary"
+            :disabled="issueStore.saving || !issueStore.activeProjectId"
+            prepend-icon="mdi-plus"
+            @click="openCreateDialog"
+          >
             新規課題
           </v-btn>
         </div>
       </div>
+
+      <v-alert v-if="issueStore.errorMessage" class="mb-4" type="error" variant="tonal">
+        {{ issueStore.errorMessage }}
+      </v-alert>
+
+      <v-alert v-if="!issueStore.loading && !issueStore.projects.length" class="mb-4" type="info" variant="tonal">
+        最初にプロジェクトを作成してください。
+      </v-alert>
 
       <div class="summary-grid mb-4">
         <div class="summary-tile">
@@ -56,7 +76,12 @@
         @clear="clearFilters"
       />
 
+      <v-card v-if="issueStore.loading" class="pa-8 text-center text-medium-emphasis">
+        <v-progress-circular indeterminate color="primary" class="mr-3" />
+        読み込み中です。
+      </v-card>
       <IssueTable
+        v-else
         :issues="filteredIssues"
         @delete="confirmDelete"
         @edit="openEditDialog"
@@ -66,6 +91,22 @@
 
     <IssueFormDialog v-model="formDialog" :issue="editingIssue" @save="saveIssue" />
     <IssueDetailDialog v-model="detailDialog" :issue="selectedIssue" @edit="editFromDetail" />
+
+    <v-dialog v-model="migrationDialog" max-width="560" persistent>
+      <v-card>
+        <v-card-title>ローカルデータの移行</v-card-title>
+        <v-card-text>
+          このブラウザに保存されている課題データをサーバーへ移行できます。移行は承認した場合のみ実行され、成功後に元データはバックアップされます。
+        </v-card-text>
+        <v-card-actions class="pa-4">
+          <v-spacer />
+          <v-btn variant="tonal" :disabled="migrationRunning" @click="skipMigration">あとで</v-btn>
+          <v-btn color="primary" :loading="migrationRunning" @click="migrateLocalData">
+            移行する
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <v-dialog v-model="projectDialog" max-width="460" persistent>
       <v-card>
@@ -84,10 +125,11 @@
           <v-divider />
           <v-card-actions class="pa-4">
             <v-spacer />
-            <v-btn variant="tonal" @click="projectDialog = false">キャンセル</v-btn>
+            <v-btn variant="tonal" :disabled="issueStore.saving" @click="projectDialog = false">キャンセル</v-btn>
             <v-btn
               color="primary"
-              :disabled="!projectForm.name.trim()"
+              :disabled="!projectForm.name.trim() || issueStore.saving"
+              :loading="issueStore.saving"
               prepend-icon="mdi-content-save-outline"
               type="submit"
             >
@@ -106,15 +148,20 @@
         </v-card-text>
         <v-card-actions class="pa-4">
           <v-spacer />
-          <v-btn variant="tonal" @click="deleteDialog = false">キャンセル</v-btn>
-          <v-btn color="error" prepend-icon="mdi-trash-can-outline" @click="deleteSelectedIssue">
+          <v-btn variant="tonal" :disabled="issueStore.saving" @click="deleteDialog = false">キャンセル</v-btn>
+          <v-btn
+            color="error"
+            :loading="issueStore.saving"
+            prepend-icon="mdi-trash-can-outline"
+            @click="deleteSelectedIssue"
+          >
             削除
           </v-btn>
         </v-card-actions>
       </v-card>
     </v-dialog>
 
-    <v-snackbar v-model="snackbar.show" color="primary" timeout="2200">
+    <v-snackbar v-model="snackbar.show" color="primary" timeout="2600">
       {{ snackbar.message }}
     </v-snackbar>
   </v-container>
@@ -123,12 +170,19 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 
+import { importLocalData } from '../api/migrationApi'
 import IssueDetailDialog from '../components/IssueDetailDialog.vue'
 import IssueFilterBar, { type FilterValue } from '../components/IssueFilterBar.vue'
 import IssueFormDialog from '../components/IssueFormDialog.vue'
 import IssueTable from '../components/IssueTable.vue'
 import { useIssueStore } from '../stores/issueStore'
 import type { Issue, IssueFormInput } from '../types/issue'
+import {
+  backupAndClearLocalAppData,
+  loadLocalAppData,
+  markMigrationSkipped,
+  wasMigrationSkipped,
+} from '../utils/storage'
 
 const issueStore = useIssueStore()
 
@@ -148,17 +202,14 @@ const formDialog = ref(false)
 const detailDialog = ref(false)
 const deleteDialog = ref(false)
 const projectDialog = ref(false)
+const migrationDialog = ref(false)
+const migrationRunning = ref(false)
 const editingIssue = ref<Issue | null>(null)
 const selectedIssueId = ref<string | null>(null)
 const deletingIssue = ref<Issue | null>(null)
 const projectFormRef = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null)
-const projectForm = reactive({
-  name: '',
-})
-const snackbar = reactive({
-  show: false,
-  message: '',
-})
+const projectForm = reactive({ name: '' })
+const snackbar = reactive({ show: false, message: '' })
 
 const projectNameRules = [
   (value: string) => Boolean(value.trim()) || 'プロジェクト名は必須です',
@@ -167,17 +218,12 @@ const projectNameRules = [
 
 const filteredIssues = computed(() => {
   const keyword = filters.keyword.trim().toLowerCase()
-
   return issueStore.sortedIssues.filter((issue) => {
     const matchesKeyword =
-      !keyword ||
-      issue.title.toLowerCase().includes(keyword) ||
-      issue.description.toLowerCase().includes(keyword)
-
+      !keyword || issue.title.toLowerCase().includes(keyword) || issue.description.toLowerCase().includes(keyword)
     const matchesStatus = !filters.status || issue.status === filters.status
     const matchesPriority = !filters.priority || issue.priority === filters.priority
     const matchesCompletion = !filters.hideCompleted || issue.status !== '完了'
-
     return matchesKeyword && matchesStatus && matchesPriority && matchesCompletion
   })
 })
@@ -186,9 +232,15 @@ const selectedIssue = computed(() =>
   selectedIssueId.value ? (issueStore.getIssueById(selectedIssueId.value) ?? null) : null,
 )
 
-onMounted(() => {
-  issueStore.load()
+onMounted(async () => {
+  await issueStore.load()
+  maybePromptMigration()
 })
+
+function maybePromptMigration(): void {
+  if (issueStore.errorMessage || issueStore.hasServerData || wasMigrationSkipped()) return
+  if (loadLocalAppData()) migrationDialog.value = true
+}
 
 function clearFilters(): void {
   filters.keyword = ''
@@ -197,10 +249,9 @@ function clearFilters(): void {
   filters.hideCompleted = false
 }
 
-function changeProject(value: unknown): void {
+async function changeProject(value: unknown): Promise<void> {
   if (typeof value !== 'string') return
-
-  issueStore.setActiveProject(value)
+  await issueStore.setActiveProject(value)
   selectedIssueId.value = null
   detailDialog.value = false
 }
@@ -213,8 +264,7 @@ function openProjectDialog(): void {
 async function createProject(): Promise<void> {
   const result = await projectFormRef.value?.validate()
   if (!result?.valid) return
-
-  const project = issueStore.createProject({ name: projectForm.name })
+  const project = await issueStore.createProject({ name: projectForm.name })
   projectDialog.value = false
   selectedIssueId.value = null
   detailDialog.value = false
@@ -231,9 +281,10 @@ function openEditDialog(issue: Issue): void {
   formDialog.value = true
 }
 
-function openDetailDialog(issue: Issue): void {
+async function openDetailDialog(issue: Issue): Promise<void> {
   selectedIssueId.value = issue.id
   detailDialog.value = true
+  await issueStore.loadIssueHistories(issue.id)
 }
 
 function editFromDetail(issue: Issue): void {
@@ -241,12 +292,12 @@ function editFromDetail(issue: Issue): void {
   openEditDialog(issue)
 }
 
-function saveIssue(input: IssueFormInput): void {
+async function saveIssue(input: IssueFormInput): Promise<void> {
   if (editingIssue.value) {
-    issueStore.updateIssue(editingIssue.value.id, input)
+    await issueStore.updateIssue(editingIssue.value.id, input)
     showMessage('課題を更新しました。')
   } else {
-    issueStore.createIssue(input)
+    await issueStore.createIssue(input)
     showMessage('課題を登録しました。')
   }
   editingIssue.value = null
@@ -257,18 +308,38 @@ function confirmDelete(issue: Issue): void {
   deleteDialog.value = true
 }
 
-function deleteSelectedIssue(): void {
+async function deleteSelectedIssue(): Promise<void> {
   if (!deletingIssue.value) return
-
-  issueStore.deleteIssue(deletingIssue.value.id)
+  await issueStore.deleteIssue(deletingIssue.value.id)
   if (selectedIssueId.value === deletingIssue.value.id) {
     selectedIssueId.value = null
     detailDialog.value = false
   }
-
   deletingIssue.value = null
   deleteDialog.value = false
   showMessage('課題を削除しました。')
+}
+
+async function migrateLocalData(): Promise<void> {
+  const localData = loadLocalAppData()
+  if (!localData) return
+  migrationRunning.value = true
+  try {
+    await importLocalData(localData)
+    await issueStore.load()
+    const backupKey = backupAndClearLocalAppData()
+    migrationDialog.value = false
+    showMessage(backupKey ? 'ローカルデータを移行し、バックアップを作成しました。' : 'ローカルデータを移行しました。')
+  } catch (error) {
+    showMessage(error instanceof Error ? error.message : '移行に失敗しました。')
+  } finally {
+    migrationRunning.value = false
+  }
+}
+
+function skipMigration(): void {
+  markMigrationSkipped()
+  migrationDialog.value = false
 }
 
 function showMessage(message: string): void {

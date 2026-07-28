@@ -27,6 +27,31 @@ body {
   justify-content: space-between;
 }
 
+
+.auth-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.auth-user-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-screen {
+  display: grid;
+  min-height: calc(100vh - 64px);
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+}
+
 .project-actions {
   display: flex;
   flex-wrap: wrap;
@@ -83,7 +108,32 @@ body {
     flex-direction: column;
   }
 
-  .project-actions {
+  
+.auth-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.auth-user-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-screen {
+  display: grid;
+  min-height: calc(100vh - 64px);
+  place-items: center;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(420px, 100%);
+}
+
+.project-actions {
     justify-content: stretch;
   }
 

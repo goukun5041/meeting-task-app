@@ -212,18 +212,18 @@ async function saveHistory(): Promise<void> {
   }
 
   if (editingHistoryId.value) {
-    issueStore.updateIssueHistory(props.issue.id, editingHistoryId.value, input)
+    await issueStore.updateIssueHistory(props.issue.id, editingHistoryId.value, input)
   } else {
-    issueStore.addIssueHistory(props.issue.id, input)
+    await issueStore.addIssueHistory(props.issue.id, input)
   }
 
   historyDialog.value = false
 }
 
-function deleteHistory(historyId: string): void {
+async function deleteHistory(historyId: string): Promise<void> {
   if (!props.issue) return
 
-  issueStore.deleteIssueHistory(props.issue.id, historyId)
+  await issueStore.deleteIssueHistory(props.issue.id, historyId)
 }
 
 function groupHistories(histories: IssueHistory[]): { date: string; histories: IssueHistory[] }[] {
