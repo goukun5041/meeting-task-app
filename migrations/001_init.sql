@@ -54,6 +54,32 @@ CREATE INDEX IF NOT EXISTS idx_tasks_user_priority ON tasks(user_id, priority);
 CREATE INDEX IF NOT EXISTS idx_tasks_user_updated_at ON tasks(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_task_histories_user_task ON task_histories(user_id, task_id);
 
+CREATE OR REPLACE FUNCTION begin_local_data_migration(target_user_id TEXT)
+RETURNS VOID AS $$
+DECLARE
+  target_user users%ROWTYPE;
+BEGIN
+  SELECT * INTO target_user
+  FROM users
+  WHERE id = target_user_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'User not found' USING ERRCODE = 'P0002';
+  END IF;
+
+  IF target_user.local_data_migrated_at IS NOT NULL
+     OR EXISTS (SELECT 1 FROM projects WHERE user_id = target_user_id)
+     OR EXISTS (SELECT 1 FROM tasks WHERE user_id = target_user_id) THEN
+    RAISE EXCEPTION 'Local data migration is not available' USING ERRCODE = 'P0001';
+  END IF;
+
+  UPDATE users
+  SET local_data_migrated_at = NOW()
+  WHERE id = target_user_id;
+END;
+$$ LANGUAGE plpgsql;
+
 CREATE OR REPLACE FUNCTION set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN

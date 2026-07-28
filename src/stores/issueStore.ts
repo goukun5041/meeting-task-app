@@ -25,6 +25,9 @@ export const useIssueStore = defineStore('issues', () => {
   const loading = ref(false)
   const saving = ref(false)
   const errorMessage = ref<string | null>(null)
+  let loadIssuesRequestId = 0
+  let loadRequestId = 0
+  let stateGeneration = 0
 
   const activeProject = computed(() =>
     projects.value.find((project) => project.id === activeProjectId.value) ?? null,
@@ -59,75 +62,114 @@ export const useIssueStore = defineStore('issues', () => {
 
   const hasServerData = computed(() => projects.value.length > 0 || issues.value.length > 0)
 
+  function reset(): void {
+    stateGeneration += 1
+    loadRequestId += 1
+    loadIssuesRequestId += 1
+    projects.value = []
+    issues.value = []
+    activeProjectId.value = null
+    loading.value = false
+    saving.value = false
+    errorMessage.value = null
+  }
+
   async function load(): Promise<void> {
+    const generation = stateGeneration
+    const requestId = ++loadRequestId
+    projects.value = []
+    issues.value = []
+    activeProjectId.value = null
     loading.value = true
     errorMessage.value = null
     try {
-      projects.value = await fetchProjects()
-      if (!activeProjectId.value || !projects.value.some((project) => project.id === activeProjectId.value)) {
-        activeProjectId.value = projects.value[0]?.id ?? null
-      }
+      const loadedProjects = await fetchProjects()
+      if (generation !== stateGeneration || requestId !== loadRequestId) return
+      projects.value = loadedProjects
+      activeProjectId.value = loadedProjects[0]?.id ?? null
       await loadIssues()
     } catch (error) {
+      if (generation !== stateGeneration || requestId !== loadRequestId) return
       errorMessage.value = toUserMessage(error)
       projects.value = []
       issues.value = []
       activeProjectId.value = null
     } finally {
-      loading.value = false
+      if (generation === stateGeneration && requestId === loadRequestId) {
+        loading.value = false
+      }
     }
   }
 
   async function loadIssues(): Promise<void> {
-    if (!activeProjectId.value) {
+    const generation = stateGeneration
+    const projectId = activeProjectId.value
+    const requestId = ++loadIssuesRequestId
+    if (!projectId) {
       issues.value = []
       return
     }
-    issues.value = await fetchTasks({ projectId: activeProjectId.value })
-  }
 
+    try {
+      const loadedIssues = await fetchTasks({ projectId })
+      if (generation === stateGeneration && requestId === loadIssuesRequestId && activeProjectId.value === projectId) {
+        issues.value = loadedIssues
+      }
+    } catch (error) {
+      if (generation === stateGeneration && requestId === loadIssuesRequestId && activeProjectId.value === projectId) {
+        issues.value = []
+        errorMessage.value = toUserMessage(error)
+      }
+    }
+  }
   async function setActiveProject(projectId: string): Promise<void> {
     if (!projects.value.some((project) => project.id === projectId)) return
     activeProjectId.value = projectId
+    errorMessage.value = null
     await loadIssues()
   }
 
   async function createProject(input: ProjectFormInput): Promise<Project> {
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
       const project = await apiCreateProject(input)
-      projects.value = [...projects.value, project]
-      activeProjectId.value = project.id
-      issues.value = []
+      if (generation === stateGeneration) {
+        projects.value = [...projects.value, project]
+        activeProjectId.value = project.id
+        issues.value = []
+      }
       return project
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
   async function createIssue(input: IssueFormInput): Promise<Issue> {
     if (!activeProjectId.value) throw new Error('プロジェクトを作成してください。')
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
       const issue = await createTask({ ...input, projectId: activeProjectId.value })
-      issues.value = [issue, ...issues.value]
+      if (generation === stateGeneration) issues.value = [issue, ...issues.value]
       return issue
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
   async function updateIssue(id: string, input: IssueFormInput): Promise<void> {
     const currentIssue = getIssueById(id)
     if (!currentIssue) return
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
@@ -136,53 +178,69 @@ export const useIssueStore = defineStore('issues', () => {
         projectId: currentIssue.projectId,
         updatedAt: currentIssue.updatedAt,
       })
-      issues.value = issues.value.map((issue) =>
-        issue.id === id ? { ...updatedIssue, histories: issue.histories } : issue,
-      )
+      if (generation === stateGeneration) {
+        issues.value = issues.value.map((issue) =>
+          issue.id === id ? { ...updatedIssue, histories: issue.histories } : issue,
+        )
+      }
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
   async function deleteIssue(id: string): Promise<void> {
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
       await deleteTask(id)
-      issues.value = issues.value.filter((issue) => issue.id !== id)
+      if (generation === stateGeneration) {
+        issues.value = issues.value.filter((issue) => issue.id !== id)
+      }
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
   async function loadIssueHistories(issueId: string): Promise<void> {
-    const histories = await fetchTaskHistories(issueId)
-    issues.value = issues.value.map((issue) =>
-      issue.id === issueId ? { ...issue, histories } : issue,
-    )
+    const generation = stateGeneration
+    errorMessage.value = null
+    try {
+      const histories = await fetchTaskHistories(issueId)
+      if (generation === stateGeneration) {
+        issues.value = issues.value.map((issue) =>
+          issue.id === issueId ? { ...issue, histories } : issue,
+        )
+      }
+    } catch (error) {
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
+    }
   }
 
   async function addIssueHistory(issueId: string, input: IssueHistoryInput): Promise<void> {
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
       const history = await createTaskHistory(issueId, input)
-      issues.value = issues.value.map((issue) =>
-        issue.id === issueId
-          ? { ...issue, histories: [...issue.histories, history], updatedAt: history.updatedAt }
-          : issue,
-      )
+      if (generation === stateGeneration) {
+        issues.value = issues.value.map((issue) =>
+          issue.id === issueId
+            ? { ...issue, histories: [...issue.histories, history] }
+            : issue,
+        )
+      }
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
@@ -190,6 +248,7 @@ export const useIssueStore = defineStore('issues', () => {
     const issue = getIssueById(issueId)
     const history = issue?.histories.find((item) => item.id === historyId)
     if (!history) return
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
@@ -197,40 +256,44 @@ export const useIssueStore = defineStore('issues', () => {
         ...input,
         updatedAt: history.updatedAt,
       })
-      issues.value = issues.value.map((item) =>
-        item.id === issueId
-          ? {
-              ...item,
-              histories: item.histories.map((historyItem) =>
-                historyItem.id === historyId ? updatedHistory : historyItem,
-              ),
-              updatedAt: updatedHistory.updatedAt,
-            }
-          : item,
-      )
+      if (generation === stateGeneration) {
+        issues.value = issues.value.map((item) =>
+          item.id === issueId
+            ? {
+                ...item,
+                histories: item.histories.map((historyItem) =>
+                  historyItem.id === historyId ? updatedHistory : historyItem,
+                ),
+              }
+            : item,
+        )
+      }
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
   async function deleteIssueHistory(issueId: string, historyId: string): Promise<void> {
+    const generation = stateGeneration
     saving.value = true
     errorMessage.value = null
     try {
       await deleteTaskHistory(issueId, historyId)
-      issues.value = issues.value.map((issue) =>
-        issue.id === issueId
-          ? { ...issue, histories: issue.histories.filter((history) => history.id !== historyId) }
-          : issue,
-      )
+      if (generation === stateGeneration) {
+        issues.value = issues.value.map((issue) =>
+          issue.id === issueId
+            ? { ...issue, histories: issue.histories.filter((history) => history.id !== historyId) }
+            : issue,
+        )
+      }
     } catch (error) {
-      errorMessage.value = toUserMessage(error)
+      if (generation === stateGeneration) errorMessage.value = toUserMessage(error)
       throw error
     } finally {
-      saving.value = false
+      if (generation === stateGeneration) saving.value = false
     }
   }
 
@@ -261,6 +324,7 @@ export const useIssueStore = defineStore('issues', () => {
     saving,
     errorMessage,
     hasServerData,
+    reset,
     load,
     loadIssues,
     setActiveProject,

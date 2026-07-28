@@ -162,7 +162,7 @@ import { computed, reactive, ref } from 'vue'
 
 import { useIssueStore } from '../stores/issueStore'
 import type { Issue, IssueHistory } from '../types/issue'
-import { formatDate, formatDateTime } from '../utils/date'
+import { formatDate, formatDateTime, toLocalDateString } from '../utils/date'
 import IssueStatusChip from './IssueStatusChip.vue'
 
 const props = defineProps<{
@@ -180,7 +180,7 @@ const historyDialog = ref(false)
 const editingHistoryId = ref<string | null>(null)
 const historyFormRef = ref<{ validate: () => Promise<{ valid: boolean }> } | null>(null)
 const historyForm = reactive({
-  date: getToday(),
+  date: toLocalDateString(),
   content: '',
 })
 
@@ -195,7 +195,7 @@ function close(value: boolean): void {
 
 function openHistoryForm(history?: IssueHistory): void {
   editingHistoryId.value = history?.id ?? null
-  historyForm.date = history?.date ?? getToday()
+  historyForm.date = history?.date ?? toLocalDateString()
   historyForm.content = history?.content ?? ''
   historyDialog.value = true
 }
@@ -246,9 +246,6 @@ function groupHistories(histories: IssueHistory[]): { date: string; histories: I
   }, [])
 }
 
-function getToday(): string {
-  return new Date().toISOString().slice(0, 10)
-}
 </script>
 
 <style scoped>

@@ -11,7 +11,7 @@
             <div class="text-body-2 text-medium-emphasis auth-user-name">
               {{ authUser.displayName || authUser.email }}
             </div>
-            <v-btn variant="tonal" size="small" prepend-icon="mdi-logout" @click="logout">
+            <v-btn variant="tonal" size="small" prepend-icon="mdi-logout" @click="handleLogout">
               ログアウト
             </v-btn>
           </div>
@@ -35,17 +35,32 @@
             </v-card-actions>
           </v-card>
         </div>
-        <IssueListView v-else />
+        <IssueListView v-else :key="authUser.uid" />
       </v-main>
     </v-layout>
   </v-app>
 </template>
 
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watch } from 'vue'
 
 import { authLoading, authUser, loginWithGoogle, logout, waitForAuthReady } from './auth/authService'
+import { useIssueStore } from './stores/issueStore'
 import IssueListView from './views/IssueListView.vue'
+
+const issueStore = useIssueStore()
+
+async function handleLogout(): Promise<void> {
+  await logout()
+}
+
+watch(
+  () => authUser.value?.uid ?? null,
+  (uid, previousUid) => {
+    if (uid !== previousUid) issueStore.reset()
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   waitForAuthReady()

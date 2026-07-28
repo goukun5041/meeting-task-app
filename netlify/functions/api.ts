@@ -1,5 +1,5 @@
 import type { Handler, HandlerEvent } from '@netlify/functions'
-import { neon } from '@neondatabase/serverless'
+import { neon, type NeonQueryFunction } from '@neondatabase/serverless'
 import { cert, getApps, initializeApp } from 'firebase-admin/app'
 import { getAuth } from 'firebase-admin/auth'
 import { randomUUID } from 'node:crypto'
@@ -9,10 +9,11 @@ const MAX_BODY_BYTES = 512 * 1024
 const STATUSES = ['未着手', '対応中', 'レビュー待ち', '完了', '保留'] as const
 const PRIORITIES = ['低', '中', '高', '緊急'] as const
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+const dateSchema = z.iso.date()
+const timestampSchema = z.iso.datetime({ offset: true })
 
 const projectInputSchema = z.object({ name: z.string().trim().min(1).max(80) }).strict()
-const projectUpdateSchema = projectInputSchema.extend({ updatedAt: z.string().min(1) }).strict()
+const projectUpdateSchema = projectInputSchema.extend({ updatedAt: timestampSchema }).strict()
 const taskInputSchema = z
   .object({
     projectId: z.string().regex(ID_PATTERN).max(128),
@@ -20,33 +21,33 @@ const taskInputSchema = z
     description: z.string().max(1000).default(''),
     status: z.enum(STATUSES),
     priority: z.enum(PRIORITIES),
-    dueDate: z.string().regex(DATE_PATTERN).nullable(),
+    dueDate: dateSchema.nullable(),
   })
   .strict()
-const taskUpdateSchema = taskInputSchema.extend({ updatedAt: z.string().min(1) }).strict()
+const taskUpdateSchema = taskInputSchema.extend({ updatedAt: timestampSchema }).strict()
 const historyInputSchema = z
   .object({
-    date: z.string().regex(DATE_PATTERN),
+    date: dateSchema,
     content: z.string().trim().min(1).max(2000),
   })
   .strict()
-const historyUpdateSchema = historyInputSchema.extend({ updatedAt: z.string().min(1) }).strict()
+const historyUpdateSchema = historyInputSchema.extend({ updatedAt: timestampSchema }).strict()
 
 const migrationProjectSchema = z
   .object({
     id: z.string().regex(ID_PATTERN).max(128),
     name: z.string().trim().min(1).max(80),
-    createdAt: z.string().min(1),
-    updatedAt: z.string().min(1),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
   })
   .strict()
 const migrationHistorySchema = z
   .object({
     id: z.string().regex(ID_PATTERN).max(128),
-    date: z.string().regex(DATE_PATTERN),
+    date: dateSchema,
     content: z.string().trim().min(1).max(2000),
-    createdAt: z.string().min(1),
-    updatedAt: z.string().min(1),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
   })
   .strict()
 const migrationTaskSchema = z
@@ -57,10 +58,10 @@ const migrationTaskSchema = z
     description: z.string().max(1000).default(''),
     status: z.enum(STATUSES),
     priority: z.enum(PRIORITIES),
-    dueDate: z.string().regex(DATE_PATTERN).nullable(),
+    dueDate: dateSchema.nullable(),
     histories: z.array(migrationHistorySchema).max(1000).default([]),
-    createdAt: z.string().min(1),
-    updatedAt: z.string().min(1),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
   })
   .strict()
 const migrationSchema = z
@@ -79,7 +80,7 @@ type AuthedContext = {
 
 type QueryParams = Record<string, string | undefined>
 
-const sql = getSql()
+let sql: NeonQueryFunction<false, false> | undefined
 
 export const handler: Handler = async (event) => {
   try {
@@ -89,13 +90,15 @@ export const handler: Handler = async (event) => {
     const path = getRoutePath(event)
     const segments = path.split('/').filter(Boolean)
 
-    if (segments[0] === 'projects') return handleProjects(event, auth, segments)
-    if (segments[0] === 'tasks') return handleTasks(event, auth, segments)
-    if (segments[0] === 'migration') return handleMigration(event, auth, segments)
+    if (segments[0] === 'projects') return await handleProjects(event, auth, segments)
+    if (segments[0] === 'tasks') return await handleTasks(event, auth, segments)
+    if (segments[0] === 'migration') return await handleMigration(event, auth, segments)
 
     return error(404, 'not_found', 'API path not found')
   } catch (err) {
     if (err instanceof ApiError) return error(err.status, err.code, err.message)
+    if (err instanceof z.ZodError) return error(400, 'validation_error', 'Request validation failed')
+    if (getErrorCode(err) === '23505') return error(409, 'conflict', 'A record with the same value already exists')
     console.error('api_error', sanitizeError(err))
     return error(500, 'internal_error', 'Internal server error')
   }
@@ -103,7 +106,7 @@ export const handler: Handler = async (event) => {
 
 async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments: string[]) {
   if (segments.length === 1 && event.httpMethod === 'GET') {
-    const rows = await sql.query(
+    const rows = await database().query(
       `SELECT id, name, created_at, updated_at
        FROM projects
        WHERE user_id = $1
@@ -116,7 +119,7 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
   if (segments.length === 1 && event.httpMethod === 'POST') {
     const input = projectInputSchema.parse(readJson(event))
     const id = createId('project')
-    const rows = await sql.query(
+    const rows = await database().query(
       `INSERT INTO projects (id, user_id, name)
        VALUES ($1, $2, $3)
        RETURNING id, name, created_at, updated_at`,
@@ -128,7 +131,7 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
   if (segments.length === 2 && event.httpMethod === 'PUT') {
     const projectId = parseId(segments[1])
     const input = projectUpdateSchema.parse(readJson(event))
-    const rows = await sql.query(
+    const rows = await database().query(
       `UPDATE projects
        SET name = $3
        WHERE user_id = $1 AND id = $2 AND updated_at = $4::timestamptz
@@ -141,7 +144,7 @@ async function handleProjects(event: HandlerEvent, auth: AuthedContext, segments
 
   if (segments.length === 2 && event.httpMethod === 'DELETE') {
     const projectId = parseId(segments[1])
-    const rows = await sql.query(
+    const rows = await database().query(
       `DELETE FROM projects WHERE user_id = $1 AND id = $2 RETURNING id`,
       [auth.userId, projectId],
     )
@@ -159,7 +162,7 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
     const input = taskInputSchema.parse(readJson(event))
     await ensureProject(auth.userId, input.projectId)
     const id = createId('issue')
-    const rows = await sql.query(
+    const rows = await database().query(
       `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING *`,
@@ -170,7 +173,7 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
 
   if (segments.length === 2 && event.httpMethod === 'GET') {
     const taskId = parseId(segments[1])
-    const rows = await sql.query(`SELECT * FROM tasks WHERE user_id = $1 AND id = $2`, [auth.userId, taskId])
+    const rows = await database().query(`SELECT * FROM tasks WHERE user_id = $1 AND id = $2`, [auth.userId, taskId])
     if (!rows.length) throw new ApiError(404, 'not_found', 'Task not found')
     return json({ task: mapTask(rows[0]) })
   }
@@ -179,7 +182,7 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
     const taskId = parseId(segments[1])
     const input = taskUpdateSchema.parse(readJson(event))
     await ensureProject(auth.userId, input.projectId)
-    const rows = await sql.query(
+    const rows = await database().query(
       `UPDATE tasks
        SET project_id = $3, title = $4, description = $5, status = $6, priority = $7, due_date = $8
        WHERE user_id = $1 AND id = $2 AND updated_at = $9::timestamptz
@@ -202,7 +205,7 @@ async function handleTasks(event: HandlerEvent, auth: AuthedContext, segments: s
 
   if (segments.length === 2 && event.httpMethod === 'DELETE') {
     const taskId = parseId(segments[1])
-    const rows = await sql.query(`DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`, [auth.userId, taskId])
+    const rows = await database().query(`DELETE FROM tasks WHERE user_id = $1 AND id = $2 RETURNING id`, [auth.userId, taskId])
     if (!rows.length) throw new ApiError(404, 'not_found', 'Task not found')
     return empty(204)
   }
@@ -240,7 +243,7 @@ async function listTasks(event: HandlerEvent, auth: AuthedContext) {
     clauses.push(`(LOWER(title) LIKE $${values.length} OR LOWER(description) LIKE $${values.length})`)
   }
 
-  const rows = await sql.query(
+  const rows = await database().query(
     `SELECT * FROM tasks
      WHERE ${clauses.join(' AND ')}
      ORDER BY CASE WHEN status = '完了' THEN 1 ELSE 0 END ASC,
@@ -254,7 +257,7 @@ async function listTasks(event: HandlerEvent, auth: AuthedContext) {
 async function listHistories(auth: AuthedContext, taskIdRaw: string) {
   const taskId = parseId(taskIdRaw)
   await ensureTask(auth.userId, taskId)
-  const rows = await sql.query(
+  const rows = await database().query(
     `SELECT * FROM task_histories WHERE user_id = $1 AND task_id = $2 ORDER BY action_date DESC, created_at ASC`,
     [auth.userId, taskId],
   )
@@ -266,7 +269,7 @@ async function createHistory(event: HandlerEvent, auth: AuthedContext, taskIdRaw
   const input = historyInputSchema.parse(readJson(event))
   await ensureTask(auth.userId, taskId)
   const id = createId('history')
-  const rows = await sql.query(
+  const rows = await database().query(
     `INSERT INTO task_histories (id, user_id, task_id, action_date, content)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
@@ -280,7 +283,7 @@ async function updateHistory(event: HandlerEvent, auth: AuthedContext, taskIdRaw
   const historyId = parseId(historyIdRaw)
   const input = historyUpdateSchema.parse(readJson(event))
   await ensureTask(auth.userId, taskId)
-  const rows = await sql.query(
+  const rows = await database().query(
     `UPDATE task_histories
      SET action_date = $4, content = $5
      WHERE user_id = $1 AND task_id = $2 AND id = $3 AND updated_at = $6::timestamptz
@@ -294,7 +297,7 @@ async function updateHistory(event: HandlerEvent, auth: AuthedContext, taskIdRaw
 async function deleteHistory(auth: AuthedContext, taskIdRaw: string, historyIdRaw: string) {
   const taskId = parseId(taskIdRaw)
   const historyId = parseId(historyIdRaw)
-  const rows = await sql.query(
+  const rows = await database().query(
     `DELETE FROM task_histories WHERE user_id = $1 AND task_id = $2 AND id = $3 RETURNING id`,
     [auth.userId, taskId, historyId],
   )
@@ -314,62 +317,55 @@ async function handleMigration(event: HandlerEvent, auth: AuthedContext, segment
     if (!projectIds.has(task.projectId)) throw new ApiError(400, 'validation_error', 'Task projectId is invalid')
   }
 
-  const stateRows = await sql.query(
-    `SELECT
-       local_data_migrated_at,
-       EXISTS (SELECT 1 FROM projects WHERE user_id = users.id) AS has_projects,
-       EXISTS (SELECT 1 FROM tasks WHERE user_id = users.id) AS has_tasks
-     FROM users WHERE id = $1`,
-    [auth.userId],
-  )
-  const state = stateRows[0]
-  if (state?.local_data_migrated_at || state?.has_projects || state?.has_tasks) {
-    throw new ApiError(409, 'already_migrated', 'Local data migration is not available for this account')
-  }
-
-  await sql.transaction((tx) => {
-    const queries = []
-    for (const project of data.projects) {
-      queries.push(
-        tx.query(
-          `INSERT INTO projects (id, user_id, name, created_at, updated_at)
-           VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)`,
-          [project.id, auth.userId, project.name, project.createdAt, project.updatedAt],
-        ),
-      )
-    }
-    for (const task of data.issues) {
-      queries.push(
-        tx.query(
-          `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz)`,
-          [
-            task.id,
-            auth.userId,
-            task.projectId,
-            task.title,
-            task.description,
-            task.status,
-            task.priority,
-            task.dueDate,
-            task.createdAt,
-            task.updatedAt,
-          ],
-        ),
-      )
-      for (const history of task.histories) {
+  try {
+    await database().transaction((tx) => {
+      const queries = [tx.query(`SELECT begin_local_data_migration($1)`, [auth.userId])]
+      for (const project of data.projects) {
         queries.push(
           tx.query(
-            `INSERT INTO task_histories (id, user_id, task_id, action_date, content, created_at, updated_at)
-             VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz)`,
-            [history.id, auth.userId, task.id, history.date, history.content, history.createdAt, history.updatedAt],
+            `INSERT INTO projects (id, user_id, name, created_at, updated_at)
+             VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)`,
+            [project.id, auth.userId, project.name, project.createdAt, project.updatedAt],
           ),
         )
       }
+      for (const task of data.issues) {
+        queries.push(
+          tx.query(
+            `INSERT INTO tasks (id, user_id, project_id, title, description, status, priority, due_date, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz, $10::timestamptz)`,
+            [
+              task.id,
+              auth.userId,
+              task.projectId,
+              task.title,
+              task.description,
+              task.status,
+              task.priority,
+              task.dueDate,
+              task.createdAt,
+              task.updatedAt,
+            ],
+          ),
+        )
+        for (const history of task.histories) {
+          queries.push(
+            tx.query(
+              `INSERT INTO task_histories (id, user_id, task_id, action_date, content, created_at, updated_at)
+               VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::timestamptz)`,
+              [history.id, auth.userId, task.id, history.date, history.content, history.createdAt, history.updatedAt],
+            ),
+          )
+        }
+      }
+      return queries
+    })
+  } catch (err) {
+    if (getErrorCode(err) === 'P0001') {
+      throw new ApiError(409, 'already_migrated', 'Local data migration is not available for this account')
     }
-    queries.push(tx.query(`UPDATE users SET local_data_migrated_at = NOW() WHERE id = $1`, [auth.userId]))
-    return queries
-  })
+    throw err
+  }
 
   return json({ imported: true })
 }
@@ -391,7 +387,22 @@ async function requireAuth(event: HandlerEvent): Promise<AuthedContext> {
   const firebaseUid = decoded.uid
   const email = typeof decoded.email === 'string' ? decoded.email : null
   const displayName = typeof decoded.name === 'string' ? decoded.name : null
-  const rows = await sql.query(
+  let rows = await database().query(
+    `SELECT id, email, display_name FROM users WHERE firebase_uid = $1`,
+    [firebaseUid],
+  )
+  if (rows.length) {
+    const user = rows[0]
+    if (user.email !== email || user.display_name !== displayName) {
+      await database().query(
+        `UPDATE users SET email = $2, display_name = $3 WHERE id = $1`,
+        [user.id, email, displayName],
+      )
+    }
+    return { userId: user.id, firebaseUid }
+  }
+
+  rows = await database().query(
     `INSERT INTO users (id, firebase_uid, email, display_name)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (firebase_uid) DO UPDATE
@@ -400,6 +411,7 @@ async function requireAuth(event: HandlerEvent): Promise<AuthedContext> {
      RETURNING id`,
     [createId('user'), firebaseUid, email, displayName],
   )
+  if (!rows.length) throw new ApiError(500, 'internal_error', 'Unable to resolve authenticated user')
 
   return { userId: rows[0].id, firebaseUid }
 }
@@ -415,18 +427,23 @@ function initializeFirebaseAdmin(): void {
   initializeApp({ credential: cert({ projectId, clientEmail, privateKey }) })
 }
 
-function getSql() {
+function database(): NeonQueryFunction<false, false> {
+  if (sql) return sql
   const databaseUrl = process.env.DATABASE_URL
-  if (!databaseUrl) throw new Error('DATABASE_URL is not configured')
-  return neon(databaseUrl)
+  if (!databaseUrl) throw new ApiError(500, 'server_config_error', 'Database is not configured')
+  sql = neon(databaseUrl)
+  return sql
 }
 
 function readJson(event: HandlerEvent): unknown {
-  const body = event.body ?? ''
-  if (body.length > MAX_BODY_BYTES) throw new ApiError(413, 'payload_too_large', 'Request body is too large')
+  const rawBody = event.body ?? ''
+  const body = event.isBase64Encoded ? Buffer.from(rawBody, 'base64').toString('utf8') : rawBody
+  if (Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES) {
+    throw new ApiError(413, 'payload_too_large', 'Request body is too large')
+  }
   if (!body) return {}
   try {
-    return JSON.parse(event.isBase64Encoded ? Buffer.from(body, 'base64').toString('utf8') : body)
+    return JSON.parse(body)
   } catch {
     throw new ApiError(400, 'invalid_json', 'Request body must be valid JSON')
   }
@@ -440,17 +457,17 @@ function addFilter(clauses: string[], values: unknown[], params: QueryParams, pa
 }
 
 async function ensureProject(userId: string, projectId: string): Promise<void> {
-  const rows = await sql.query(`SELECT id FROM projects WHERE user_id = $1 AND id = $2`, [userId, projectId])
+  const rows = await database().query(`SELECT id FROM projects WHERE user_id = $1 AND id = $2`, [userId, projectId])
   if (!rows.length) throw new ApiError(404, 'not_found', 'Project not found')
 }
 
 async function ensureTask(userId: string, taskId: string): Promise<void> {
-  const rows = await sql.query(`SELECT id FROM tasks WHERE user_id = $1 AND id = $2`, [userId, taskId])
+  const rows = await database().query(`SELECT id FROM tasks WHERE user_id = $1 AND id = $2`, [userId, taskId])
   if (!rows.length) throw new ApiError(404, 'not_found', 'Task not found')
 }
 
 async function throwConflictOrNotFound(table: string, userId: string, id: string, taskId?: string): Promise<never> {
-  const rows = await sql.query(
+  const rows = await database().query(
     taskId
       ? `SELECT id FROM task_histories WHERE user_id = $1 AND task_id = $2 AND id = $3`
       : `SELECT id FROM ${table} WHERE user_id = $1 AND id = $2`,
@@ -539,8 +556,16 @@ function responseHeaders() {
   }
 }
 
-function sanitizeError(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
+function getErrorCode(err: unknown): string | undefined {
+  if (!(err instanceof Error)) return undefined
+  const code = (err as Error & { code?: unknown }).code
+  return typeof code === 'string' ? code : undefined
+}
+
+function sanitizeError(err: unknown): { name: string; code?: string } {
+  if (!(err instanceof Error)) return { name: 'UnknownError' }
+  const code = getErrorCode(err)
+  return code ? { name: err.name, code } : { name: err.name }
 }
 
 class ApiError extends Error {

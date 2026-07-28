@@ -180,8 +180,6 @@ import type { Issue, IssueFormInput } from '../types/issue'
 import {
   backupAndClearLocalAppData,
   loadLocalAppData,
-  markMigrationSkipped,
-  wasMigrationSkipped,
 } from '../utils/storage'
 
 const issueStore = useIssueStore()
@@ -238,7 +236,7 @@ onMounted(async () => {
 })
 
 function maybePromptMigration(): void {
-  if (issueStore.errorMessage || issueStore.hasServerData || wasMigrationSkipped()) return
+  if (issueStore.errorMessage || issueStore.hasServerData) return
   if (loadLocalAppData()) migrationDialog.value = true
 }
 
@@ -300,6 +298,7 @@ async function saveIssue(input: IssueFormInput): Promise<void> {
     await issueStore.createIssue(input)
     showMessage('課題を登録しました。')
   }
+  formDialog.value = false
   editingIssue.value = null
 }
 
@@ -326,10 +325,21 @@ async function migrateLocalData(): Promise<void> {
   migrationRunning.value = true
   try {
     await importLocalData(localData)
-    await issueStore.load()
-    const backupKey = backupAndClearLocalAppData()
     migrationDialog.value = false
-    showMessage(backupKey ? 'ローカルデータを移行し、バックアップを作成しました。' : 'ローカルデータを移行しました。')
+
+    let message = 'ローカルデータを移行しました。'
+    try {
+      const backupKey = backupAndClearLocalAppData()
+      if (backupKey) message = 'ローカルデータを移行し、バックアップを作成しました。'
+    } catch {
+      message = 'サーバーへの移行は成功しましたが、ローカルバックアップを作成できませんでした。'
+    }
+
+    await issueStore.load()
+    if (issueStore.errorMessage) {
+      message += ' 最新データの再読み込みに失敗したため、画面を再読み込みしてください。'
+    }
+    showMessage(message)
   } catch (error) {
     showMessage(error instanceof Error ? error.message : '移行に失敗しました。')
   } finally {
@@ -338,7 +348,6 @@ async function migrateLocalData(): Promise<void> {
 }
 
 function skipMigration(): void {
-  markMigrationSkipped()
   migrationDialog.value = false
 }
 

@@ -2,7 +2,6 @@ import type { Issue, IssueHistory, Project } from '../types/issue'
 
 export const APP_DATA_STORAGE_KEY = 'meeting-task-app:data'
 const BACKUP_PREFIX = 'meeting-task-app:data:backup:'
-const MIGRATION_SKIPPED_KEY = 'meeting-task-app:data:migration-skipped'
 
 export interface AppData {
   version: 2
@@ -27,14 +26,6 @@ export function hasLocalAppData(): boolean {
   return loadLocalAppData() !== null
 }
 
-export function wasMigrationSkipped(): boolean {
-  return localStorage.getItem(MIGRATION_SKIPPED_KEY) === 'true'
-}
-
-export function markMigrationSkipped(): void {
-  localStorage.setItem(MIGRATION_SKIPPED_KEY, 'true')
-}
-
 export function backupAndClearLocalAppData(now = new Date()): string | null {
   const rawValue = localStorage.getItem(APP_DATA_STORAGE_KEY)
   if (!rawValue) return null
@@ -43,7 +34,6 @@ export function backupAndClearLocalAppData(now = new Date()): string | null {
   const backupKey = `${BACKUP_PREFIX}${timestamp}`
   localStorage.setItem(backupKey, rawValue)
   localStorage.removeItem(APP_DATA_STORAGE_KEY)
-  localStorage.removeItem(MIGRATION_SKIPPED_KEY)
   return backupKey
 }
 

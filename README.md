@@ -59,6 +59,8 @@ FIREBASE_PRIVATE_KEY=
 
 Netlify の `FIREBASE_PRIVATE_KEY` は `\n` を含む形式で登録できます。Functions 側で実改行へ復元します。
 
+本番とDeploy Previewでは環境変数のコンテキストを分離してください。Deploy Previewから本番Neonへ接続させず、必要な場合はNeonのPreview用ブランチとPreview専用Firebase設定を使用します。未信頼PRのDeploy Previewには本番シークレットを公開しないでください。
+
 ## Firebase 設定
 
 1. Firebase Console でプロジェクトを作成します。
@@ -79,14 +81,14 @@ Netlify の `FIREBASE_PRIVATE_KEY` は `\n` を含む形式で登録できます
 DATABASE_URL='postgres://...' npm run db:migrate
 ```
 
-マイグレーション SQL は `migrations/001_init.sql` です。
+マイグレーションSQLは`migrations/`の番号順に適用され、`schema_migrations`へファイル名・SHA-256・適用日時を記録します。適用済みファイルを書き換えるとrunnerは停止するため、変更は`002_*.sql`のような新しいファイルとして追加してください。各migrationは再実行可能に作成します。
 
 ## ローカル開発
 
-通常の Vite だけでは Functions が動きません。Functions 込みで確認する場合は Netlify CLI を使います。
+通常の Vite だけでは Functions が動きません。Functions 込みで確認する場合は Netlify CLI を使います。Node.js `22.13`以上`25`未満、npm `11.16.0`を使用してください。
 
 ```sh
-npm install
+npm ci
 npm run dev:netlify
 ```
 
@@ -99,14 +101,15 @@ npm run dev
 ## テスト
 
 ```sh
-npm run test
-npm run build
+npm run verify
 ```
+
+`verify` はテスト、TypeScript型チェック、Vite本番ビルドを順に実行します。Netlifyのビルドゲートでも同じコマンドを使用します。
 
 ## Netlify デプロイ
 
 1. Netlify で新規サイトを作成し、このリポジトリを接続します。
-2. Build command は `npm run build`、Publish directory は `dist` です。
+2. Build command は `npm run verify`、Publish directory は `dist` です。
 3. Functions directory は `netlify/functions` です。`netlify.toml` に定義済みです。
 4. Netlify 環境変数を設定します。
 5. Neon のマイグレーションを実行します。
@@ -140,7 +143,9 @@ meeting-task-app:data:backup:2026-07-14T14-30-00
 ## ロールバック
 
 - アプリのロールバックは Netlify の Deploys から以前のデプロイを publish します。
-- DB のスキーマ変更は `migrations/001_init.sql` を基準に確認します。
+- DB変更前にNeonのブランチまたはPITR復元ポイントを確認し、復元手順を記録してください。
+- 現在の`001_init.sql`は追加的かつ再実行可能な初期スキーマですが、自動down migrationはありません。破壊的変更は既存Functionsとの互換期間を設け、新しい番号のmigrationとして追加してください。
+- DBを以前の状態へ戻す場合は、先にNeonのブランチ/PITRへ復元して整合性を確認してから、対応するNetlifyデプロイをpublishします。
 - localStorage 移行後のブラウザ内データは `meeting-task-app:data:backup:*` から復元できます。
 
 ## 本番デプロイ後の確認

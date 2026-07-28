@@ -1,10 +1,11 @@
 [build]
-  command = "npm run build"
+  command = "npm run verify"
   publish = "dist"
   functions = "netlify/functions"
 
 [build.environment]
   NODE_VERSION = "22"
+  NPM_VERSION = "11.16.0"
 
 [[redirects]]
   from = "/api/*"
