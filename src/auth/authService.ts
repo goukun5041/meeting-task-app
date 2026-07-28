@@ -19,7 +19,7 @@ export function waitForAuthReady(): Promise<User | null> {
   if (authReadyPromise) return authReadyPromise
 
   authReadyPromise = new Promise((resolve) => {
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (user: User | null) => {
       authUser.value = user
       authLoading.value = false
       unsubscribe()
@@ -27,7 +27,7 @@ export function waitForAuthReady(): Promise<User | null> {
     })
   })
 
-  onAuthStateChanged(firebaseAuth, (user) => {
+  onAuthStateChanged(firebaseAuth, (user: User | null) => {
     authUser.value = user
     authLoading.value = false
   })
