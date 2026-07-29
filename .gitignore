@@ -29,9 +29,8 @@ out/
 .nuxt
 
 # dotenv environment variable files
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
 
 # npm cache directory
 .npm
@@ -55,3 +54,6 @@ $RECYCLE.BIN/
 
 # Windows shortcuts
 *.lnk
+# Netlify local state
+.netlify/
+deno.lock

@@ -129,6 +129,5 @@ async function submit(): Promise<void> {
   if (!result?.valid) return
 
   emit('save', { ...form })
-  close(false)
 }
 </script>
