@@ -2,6 +2,8 @@
 
 Vue 3 + TypeScript + Vite の静的フロントエンド、Netlify Functions、Neon PostgreSQL、Firebase Authentication で構成する課題管理アプリです。
 
+本番URL: [https://meeting-task-app.netlify.app/](https://meeting-task-app.netlify.app/)
+
 ## アーキテクチャ
 
 ```text
@@ -120,8 +122,9 @@ npm run verify
 ## GitHub Pages から Netlify への切り替え
 
 - Vite の GitHub Pages 用 `base` は削除済みです。
-- GitHub Pages デプロイ workflow は削除済みです。
-- GitHub の Pages 設定で公開元を無効化し、Netlify の URL を利用してください。
+- GitHub Pages ではアプリ本体を配信せず、`github-pages/index.html` からNetlifyの本番URLへ転送します。
+- `.github/workflows/deploy-pages-redirect.yml` は `main` 更新時にリダイレクトページだけをデプロイします。
+- GitHub Pagesは静的ホスティングのためHTTP 301/302ではなく、JavaScriptの`location.replace()`と`meta refresh`を使用します。
 
 ## localStorage データ移行
 
