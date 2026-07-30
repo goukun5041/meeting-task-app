@@ -772,7 +772,7 @@ function mapTask(row: any) {
     description: row.description,
     status: row.status,
     priority: row.priority,
-    dueDate: row.due_date ? String(row.due_date).slice(0, 10) : null,
+    dueDate: row.due_date ? toDateOnly(row.due_date) : null,
     histories: [],
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
@@ -782,7 +782,7 @@ function mapTask(row: any) {
 function mapHistory(row: any) {
   return {
     id: row.id,
-    date: row.action_date ? String(row.action_date).slice(0, 10) : '',
+    date: row.action_date ? toDateOnly(row.action_date) : '',
     content: row.content,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
@@ -792,6 +792,15 @@ function mapHistory(row: any) {
 function toIso(value: unknown): string {
   if (value instanceof Date) return value.toISOString()
   return String(value)
+}
+
+function toDateOnly(value: unknown): string {
+  if (!(value instanceof Date)) return String(value).slice(0, 10)
+
+  const year = value.getFullYear()
+  const month = String(value.getMonth() + 1).padStart(2, '0')
+  const day = String(value.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function json(body: unknown, statusCode = 200) {
