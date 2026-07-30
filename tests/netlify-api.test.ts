@@ -127,6 +127,148 @@ describe('api auth', () => {
   })
 })
 
+describe('api date serialization', () => {
+  const timestamp = '2026-07-30T00:00:00.000Z'
+  const historyRow = () => ({
+    id: 'history-1',
+    task_id: 'task-1',
+    action_date: new Date(2026, 6, 30),
+    content: 'History',
+    created_at: new Date(timestamp),
+    updated_at: new Date(timestamp),
+  })
+  const taskRow = () => ({
+    id: 'task-1',
+    project_id: 'project-1',
+    title: 'Task',
+    description: '',
+    status: '未着手',
+    priority: '中',
+    due_date: new Date(2026, 6, 31),
+    created_at: new Date(timestamp),
+    updated_at: new Date(timestamp),
+  })
+
+  it.each([
+    { method: 'GET', path: '/api/tasks/task-1/histories', marker: 'SELECT * FROM task_histories', body: null },
+    {
+      method: 'POST',
+      path: '/api/tasks/task-1/histories',
+      marker: 'INSERT INTO task_histories',
+      body: { date: '2026-07-30', content: 'History' },
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/task-1/histories/history-1',
+      marker: 'UPDATE task_histories',
+      body: { date: '2026-07-30', content: 'History', updatedAt: timestamp },
+    },
+  ])('$method $path serializes action_date as YYYY-MM-DD', async ({ method, path, marker, body }) => {
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query.includes('SELECT id, email, display_name FROM users')) {
+        return [{ id: 'user-1', email: 'user@example.com', display_name: 'User' }]
+      }
+      if (query.includes(marker)) return [historyRow()]
+      if (query.includes('SELECT id FROM tasks')) return [{ id: 'task-1' }]
+      return []
+    })
+
+    const response = await handler(
+      authedEvent({ method, path, body: body ? JSON.stringify(body) : null }),
+      {} as any,
+      () => undefined,
+    )
+    const responseBody = JSON.parse(response?.body ?? '{}')
+    const history = method === 'GET' ? responseBody.histories[0] : responseBody.history
+
+    expect(response?.statusCode).toBe(method === 'POST' ? 201 : 200)
+    expect(history.date).toBe('2026-07-30')
+  })
+
+  it.each([
+    { method: 'GET', path: '/api/tasks', marker: 'SELECT * FROM tasks', body: null, list: true },
+    { method: 'GET', path: '/api/tasks/task-1', marker: 'SELECT * FROM tasks', body: null, list: false },
+    {
+      method: 'POST',
+      path: '/api/tasks',
+      marker: 'INSERT INTO tasks',
+      body: {
+        projectId: 'project-1',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: '2026-07-31',
+      },
+      list: false,
+    },
+    {
+      method: 'PUT',
+      path: '/api/tasks/task-1',
+      marker: 'UPDATE tasks',
+      body: {
+        projectId: 'project-1',
+        title: 'Task',
+        description: '',
+        status: '未着手',
+        priority: '中',
+        dueDate: '2026-07-31',
+        updatedAt: timestamp,
+      },
+      list: false,
+    },
+  ])('$method $path serializes due_date as YYYY-MM-DD', async ({ method, path, marker, body, list }) => {
+    mocks.query.mockImplementation(async (query: string) => {
+      if (query.includes('SELECT id, email, display_name FROM users')) {
+        return [{ id: 'user-1', email: 'user@example.com', display_name: 'User' }]
+      }
+      if (query.includes(marker)) return [taskRow()]
+      return []
+    })
+
+    const response = await handler(
+      authedEvent({ method, path, body: body ? JSON.stringify(body) : null }),
+      {} as any,
+      () => undefined,
+    )
+    const responseBody = JSON.parse(response?.body ?? '{}')
+    const task = list ? responseBody.tasks[0] : responseBody.task
+
+    expect(response?.statusCode).toBe(method === 'POST' ? 201 : 200)
+    expect(task.dueDate).toBe('2026-07-31')
+  })
+
+  it('preserves a PostgreSQL DATE in JST instead of shifting it to the previous UTC date', async () => {
+    const originalTimezone = process.env.TZ
+    process.env.TZ = 'Asia/Tokyo'
+    try {
+      const actionDate = new Date(2026, 6, 30)
+      expect(actionDate.toISOString().slice(0, 10)).toBe('2026-07-29')
+      mocks.query.mockImplementation(async (query: string) => {
+        if (query.includes('SELECT id, email, display_name FROM users')) {
+          return [{ id: 'user-1', email: 'user@example.com', display_name: 'User' }]
+        }
+        if (query.includes('INSERT INTO task_histories')) return [{ ...historyRow(), action_date: actionDate }]
+        return []
+      })
+
+      const response = await handler(
+        authedEvent({
+          method: 'POST',
+          path: '/api/tasks/task-1/histories',
+          body: JSON.stringify({ date: '2026-07-30', content: 'History' }),
+        }),
+        {} as any,
+        () => undefined,
+      )
+
+      expect(JSON.parse(response?.body ?? '{}').history.date).toBe('2026-07-30')
+    } finally {
+      process.env.TZ = originalTimezone
+    }
+  })
+})
+
 describe('api write serialization', () => {
   const writeCases = [
     {
